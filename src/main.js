@@ -8,7 +8,20 @@ const net = require('net');
 const http = require('http');
 const os = require('os');
 
-const { SERVER_EXE, MODELS_DIR, MODELS, buildArgs } = require('./models');
+const { SERVER_EXE, MODELS_DIR, MODELS, buildArgs, resolveModels, detectLlamaDir } = require('./models');
+
+/** 当前生效的模型目录（设置可覆盖；否则自动探测） */
+function currentModelsDir() {
+  if (settings.modelsDir && fs.existsSync(settings.modelsDir)) return settings.modelsDir;
+  const detected = detectLlamaDir();
+  if (detected) return path.join(detected, 'models');
+  return settings.modelsDir || MODELS_DIR;
+}
+
+/** 取带绝对路径的模型列表 */
+function modelsWithPaths() {
+  return resolveModels(currentModelsDir());
+}
 
 const PROC_NAME = 'llama-server';
 
@@ -30,13 +43,27 @@ let settings = { ...DEFAULT_SETTINGS };
 const SETTINGS_FILE = () => path.join(app.getPath('userData'), 'settings.json');
 
 function loadSettings() {
+  let parsed = {};
   try {
-    const raw = fs.readFileSync(SETTINGS_FILE(), 'utf8');
-    const parsed = JSON.parse(raw);
-    settings = { ...DEFAULT_SETTINGS, ...parsed };
+    parsed = JSON.parse(fs.readFileSync(SETTINGS_FILE(), 'utf8'));
   } catch (_) {
-    settings = { ...DEFAULT_SETTINGS };
+    parsed = {};
   }
+
+  // 自动探测本机的 llama.cpp 目录
+  const detectedRoot = detectLlamaDir();
+  const detectedModelsDir = detectedRoot ? path.join(detectedRoot, 'models') : null;
+
+  settings = { ...DEFAULT_SETTINGS, ...parsed };
+
+  // 换机器后 settings.json 里的旧绝对路径会失效，此时回退到自动探测值
+  if (!settings.serverExe || !fs.existsSync(settings.serverExe)) {
+    if (detectedRoot) settings.serverExe = path.join(detectedRoot, 'llama-server.exe');
+  }
+  if (!settings.modelsDir || !fs.existsSync(settings.modelsDir)) {
+    if (detectedModelsDir) settings.modelsDir = detectedModelsDir;
+  }
+
   return settings;
 }
 
@@ -220,7 +247,7 @@ function killLlamaProcesses() {
 }
 
 async function startModel(modelId, ctxK) {
-  const model = MODELS.find((m) => m.id === modelId);
+  const model = modelsWithPaths().find((m) => m.id === modelId);
   if (!model) return { ok: false, error: `无效模型: ${modelId}` };
 
   // 前置校验：文件是否存在（路径可在设置里覆盖）
@@ -230,13 +257,13 @@ async function startModel(modelId, ctxK) {
     pushLog(`[错误] ${msg}`, 'err');
     return { ok: false, error: msg };
   }
-  if (!fs.existsSync(model.file)) {
-    const msg = `找不到模型文件: ${model.file}`;
+  if (!fs.existsSync(model.filePath)) {
+    const msg = `找不到模型文件: ${model.filePath}`;
     pushLog(`[错误] ${msg}`, 'err');
     return { ok: false, error: msg };
   }
-  if (model.mmproj && !fs.existsSync(model.mmproj)) {
-    const msg = `找不到视觉投影文件: ${model.mmproj}`;
+  if (model.mmprojPath && !fs.existsSync(model.mmprojPath)) {
+    const msg = `找不到视觉投影文件: ${model.mmprojPath}`;
     pushLog(`[错误] ${msg}`, 'err');
     return { ok: false, error: msg };
   }
@@ -396,7 +423,7 @@ function createWindow() {
  * IPC
  * ------------------------------------------------------------------ */
 
-ipcMain.handle('get-models', () => MODELS.map((m) => ({
+ipcMain.handle('get-models', () => modelsWithPaths().map((m) => ({
   id: m.id,
   name: m.name,
   alias: m.alias,
@@ -404,11 +431,11 @@ ipcMain.handle('get-models', () => MODELS.map((m) => ({
   port: m.port,
   vision: m.vision,
   useMtp: m.useMtp,
-  file: m.file,
-  fileExists: fs.existsSync(m.file),
-  mmproj: m.mmproj,
-  mmprojExists: m.mmproj ? fs.existsSync(m.mmproj) : null,
-  sizeGb: fs.existsSync(m.file) ? fs.statSync(m.file).size / 1024 ** 3 : 0,
+  file: m.filePath,
+  fileExists: fs.existsSync(m.filePath),
+  mmproj: m.mmprojPath,
+  mmprojExists: m.mmprojPath ? fs.existsSync(m.mmprojPath) : null,
+  sizeGb: fs.existsSync(m.filePath) ? fs.statSync(m.filePath).size / 1024 ** 3 : 0,
 })));
 
 ipcMain.handle('get-status', () => probeStatus());

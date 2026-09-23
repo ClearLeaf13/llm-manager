@@ -23,7 +23,8 @@
     "win": {
       "target": [
         "portable"
-      ]
+      ],
+      "signAndEditExecutable": false
     },
     "portable": {
       "artifactName": "llama.cpp管理器.exe"
