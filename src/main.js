@@ -12,6 +12,7 @@ const { SERVER_EXE, MODELS_DIR, MODELS, buildArgs, resolveModels, detectLlamaDir
 const store = require('./store');
 const scanner = require('./scanner');
 const trash = require('./trash');
+const apiServer = require('./api-server');
 
 /** 开机自启在注册表 Run 项里的名称 */
 const AUTOSTART_KEY = 'llama.cpp-manager';
@@ -886,6 +887,19 @@ app.whenReady().then(() => {
   createTray();
   createWindow();
 
+  // 本地控制 API：供外部程序（如 DSH 插件）查询与启停模型。
+  // 起不来不影响管理器本身，静默降级即可。
+  apiServer.start({
+    userDataDir: app.getPath('userData'),
+    listModels: () => store.all(),
+    getStatus: () => probeStatus(),
+    start: (id, ctxK) => startModel(id, ctxK),
+    stop: () => stopModel(),
+  }).then((r) => {
+    if (r.ok) console.log(`[api] 控制接口已就绪: http://127.0.0.1:${r.port}`);
+    else console.warn('[api] 控制接口未启动:', r.error);
+  });
+
   app.on('activate', () => {
     showWindow();
   });
@@ -906,6 +920,8 @@ app.on('window-all-closed', () => {
 // 注意：没抢到单实例锁的进程 child 恒为 null，不会误杀在跑的 llama-server
 app.on('before-quit', () => {
   quitting = true;
+  // 关闭控制接口并清理落盘令牌
+  apiServer.stop().catch(() => {});
   if (!gotLock) return;
   if (child) {
     try { child.kill(); } catch (_) {}

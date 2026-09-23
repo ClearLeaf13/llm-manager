@@ -1,6 +1,6 @@
 {
   "name": "llm-manager",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "llama.cpp 管理器 — 模型切换与实时日志",
   "main": "src/main.js",
   "scripts": {
