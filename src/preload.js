@@ -19,8 +19,17 @@ contextBridge.exposeInMainWorld('api', {
   modelsCreate: (input) => ipcRenderer.invoke('models-create', input),
   modelsUpdate: (id, patch) => ipcRenderer.invoke('models-update', id, patch),
   modelsDelete: (id) => ipcRenderer.invoke('models-delete', id),
+  modelsDeletePreview: (ids) => ipcRenderer.invoke('models-delete-preview', ids),
+  modelsDeleteBatch: (ids, withFiles) => ipcRenderer.invoke('models-delete-batch', ids, withFiles),
   modelsReset: () => ipcRenderer.invoke('models-reset'),
   modelsNextPort: () => ipcRenderer.invoke('models-next-port'),
+
+  // 磁盘占用
+  diskUsage: () => ipcRenderer.invoke('disk-usage'),
+
+  // 开机自启
+  autostartGet: () => ipcRenderer.invoke('autostart-get'),
+  autostartSet: (enable) => ipcRenderer.invoke('autostart-set', enable),
 
   getSettings: () => ipcRenderer.invoke('get-settings'),
   saveSettings: (patch) => ipcRenderer.invoke('save-settings', patch),
@@ -30,6 +39,7 @@ contextBridge.exposeInMainWorld('api', {
   winMinimize: () => ipcRenderer.send('win-minimize'),
   winMaximize: () => ipcRenderer.send('win-maximize'),
   winClose: () => ipcRenderer.send('win-close'),
+  winHide: () => ipcRenderer.send('win-hide'),
 
   onLog: (cb) => ipcRenderer.on('log', (_e, entry) => cb(entry)),
   onStatus: (cb) => ipcRenderer.on('status', (_e, s) => cb(s)),

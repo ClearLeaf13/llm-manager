@@ -217,6 +217,22 @@ async function tickHardware() {
       el.title = `${g.name} · 占用率 ${g.util}%`;
     }
   } catch (_) { $('st-vram').textContent = '—'; }
+
+  // 磁盘占用
+  try {
+    const d = await window.api.diskUsage();
+    const el = $('st-disk');
+    if (!d || (!d.totalGb && !d.usedGb)) {
+      el.textContent = '—';
+      el.title = '磁盘信息不可用';
+    } else {
+      // 显示：模型合计 / 剩余可用
+      el.textContent = `${d.usedGb.toFixed(1)} / ${d.freeGb.toFixed(1)} GB`;
+      el.title = `模型文件合计 ${d.usedGb.toFixed(2)} GB\n`
+        + `所在盘 ${d.dir} 剩余 ${d.freeGb.toFixed(1)} GB`
+        + (d.totalGb ? ` / 共 ${d.totalGb.toFixed(1)} GB` : '');
+    }
+  } catch (_) { $('st-disk').textContent = '—'; }
 }
 
 /* ------------------------------------------------------------------ *
@@ -355,26 +371,142 @@ function renderManage() {
     edit.textContent = '编辑';
     edit.addEventListener('click', () => openModal(m.id));
     acts.appendChild(edit);
-
-    const del = document.createElement('button');
-    del.className = 'mini danger';
-    del.textContent = '删除';
-    del.disabled = isActive;
-    if (isActive) del.title = '模型正在运行，请先停止';
-    del.addEventListener('click', () => doDelete(m));
-    acts.appendChild(del);
+    // 删除统一走顶部「删除模型」按钮，避免误点单个卡片就删几十 GB
 
     row.appendChild(acts);
     box.appendChild(row);
   });
 }
 
-/** 删除模型（带确认） */
-async function doDelete(m) {
-  if (!confirm(`确定删除模型「${m.name}」吗？\n\n只会从列表中移除，不会删除 gguf 文件。`)) return;
-  const res = await window.api.modelsDelete(m.id);
-  if (!res.ok) { toast(res.error || '删除失败', 'err'); return; }
-  toast('已删除', 'ok');
+/* --- 批量删除 --- */
+
+/** 打开删除弹窗，列出所有模型供勾选 */
+function openDeleteModal() {
+  if (!MANAGED.length) { toast('没有可删除的模型', 'err'); return; }
+
+  const list = $('del-list');
+  list.innerHTML = '';
+
+  MANAGED.forEach((m) => {
+    const isActive = STATUS.current === m.id;
+
+    const row = document.createElement('label');
+    row.className = 'del-row' + (isActive ? ' locked' : '');
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = m.id;
+    cb.disabled = isActive;
+    if (isActive) cb.title = '模型正在运行，无法删除';
+    cb.addEventListener('change', updateDeletePreview);
+
+    const info = document.createElement('div');
+    info.className = 'dinfo';
+    const files = [m.file, m.mmproj].filter(Boolean).join(' + ');
+    info.innerHTML = `
+      <div class="dname">${esc(m.name)}</div>
+      <div class="dmeta">${esc(files)} · ${fmtGb(m.sizeGb)}</div>
+    `;
+
+    row.appendChild(cb);
+    row.appendChild(info);
+    list.appendChild(row);
+  });
+
+  $('del-error').textContent = '';
+  $('del-with-files').checked = true;
+  updateDeletePreview();
+  $('del-modal').hidden = false;
+}
+
+function closeDeleteModal() {
+  $('del-modal').hidden = true;
+}
+
+/** 勾选变化时，拉取待删文件清单并展示 */
+async function updateDeletePreview() {
+  const ids = [...document.querySelectorAll('#del-list input[type=checkbox]:checked')]
+    .map((c) => c.value);
+
+  const btn = $('del-confirm');
+  const box = $('del-preview');
+
+  if (!ids.length) {
+    btn.disabled = true;
+    box.innerHTML = '';
+    return;
+  }
+
+  btn.disabled = true;   // 预览返回前禁止点击，避免删到未预览的内容
+  box.textContent = '正在统计…';
+
+  const res = await window.api.modelsDeletePreview(ids);
+  if (!res.ok) {
+    box.textContent = '';
+    $('del-error').textContent = res.error || '统计失败';
+    return;
+  }
+
+  const withFiles = $('del-with-files').checked;
+  const lines = [];
+
+  if (withFiles) {
+    res.items.forEach((it) => {
+      it.files.forEach((f) => {
+        const tag = f.kind === 'mmproj' ? '[投影]' : '[模型]';
+        lines.push(`${tag} ${f.path}  ${f.sizeGb.toFixed(2)} GB`);
+      });
+      it.missing.forEach((n) => lines.push(`[缺失] ${n}`));
+    });
+  } else {
+    res.items.forEach((it) => lines.push(`[仅移除配置] ${it.name}`));
+  }
+
+  const total = res.totalGb;
+  box.innerHTML = lines.map((l) => `<div class="fpath">${esc(l)}</div>`).join('')
+    + `<div class="ftotal">合计：${total.toFixed(2)} GB（${res.items.length} 个模型）</div>`
+    + (res.warnings.length
+      ? `<div style="color:var(--warn)">${res.warnings.map(esc).join('<br>')}</div>`
+      : '');
+
+  $('del-error').textContent = '';
+  btn.disabled = false;
+}
+
+async function confirmDelete() {
+  const ids = [...document.querySelectorAll('#del-list input[type=checkbox]:checked')]
+    .map((c) => c.value);
+  if (!ids.length) return;
+
+  const withFiles = $('del-with-files').checked;
+  const btn = $('del-confirm');
+  btn.disabled = true;
+  btn.textContent = '删除中…';
+
+  const res = await window.api.modelsDeleteBatch(ids, withFiles);
+
+  btn.textContent = '确认删除';
+  btn.disabled = false;
+
+  if (!res.ok) {
+    $('del-error').textContent = res.error || '删除失败';
+    return;
+  }
+
+  const parts = [`已移除 ${res.removed} 个模型`];
+  if (withFiles) parts.push(`文件移入回收站 ${res.trashed} 个`);
+  if (res.failed.length) parts.push(`失败 ${res.failed.length} 个`);
+  if (res.skipped.length) parts.push(`跳过 ${res.skipped.length} 个`);
+
+  toast(parts.join(' · '), res.failed.length ? 'err' : 'ok');
+
+  if (res.failed.length) {
+    $('del-error').textContent = res.failed
+      .map((f) => `${f.name}: ${f.error}`).join(' ; ');
+    return;
+  }
+
+  closeDeleteModal();
   await refreshManage();
   await refresh();
 }
@@ -629,6 +761,14 @@ function fillSettings(s) {
   $('set-logfilter').checked = !!s.logSysOnly;
   $('set-server').value = s.serverExe || '';
   $('set-modelsdir').value = s.modelsDir || '';
+  $('set-tray').checked = s.closeToTray !== false;
+
+  // 开机自启状态来自注册表，不在 settings.json 里
+  window.api.autostartGet().then((r) => {
+    const el = $('set-autostart');
+    el.checked = !!(r && r.enabled);
+    el.disabled = !(r && r.supported);
+  }).catch(() => {});
 }
 
 function collectSettings() {
@@ -642,6 +782,7 @@ function collectSettings() {
     logSysOnly: $('set-logfilter').checked,
     serverExe: $('set-server').value.trim(),
     modelsDir: $('set-modelsdir').value.trim(),
+    closeToTray: $('set-tray').checked,
   };
 }
 
@@ -674,7 +815,6 @@ function openSettings(open) {
 $('btn-min').addEventListener('click', () => window.api.winMinimize());
 $('btn-max').addEventListener('click', () => window.api.winMaximize());
 $('btn-close').addEventListener('click', () => window.api.winClose());
-
 $('btn-clear').addEventListener('click', async () => {
   await window.api.clearLogs();
   $('log').innerHTML = '';
@@ -694,6 +834,7 @@ document.querySelectorAll('.rail-btn[data-view]').forEach((b) => {
 $('btn-scan').addEventListener('click', doScan);
 $('scan-close').addEventListener('click', () => { $('scan-box').hidden = true; });
 $('btn-add').addEventListener('click', () => openModal(null));
+$('btn-delete-models').addEventListener('click', openDeleteModal);
 $('btn-reset-models').addEventListener('click', async () => {
   if (!confirm('恢复内置的三套预置模型？\n\n会清空当前模型列表并重新导入预置配置，不会删除 gguf 文件。')) return;
   const res = await window.api.modelsReset();
@@ -701,6 +842,15 @@ $('btn-reset-models').addEventListener('click', async () => {
   toast('已恢复预置模型', 'ok');
   await refreshManage();
   await refresh();
+});
+
+// 批量删除弹窗
+$('del-close').addEventListener('click', closeDeleteModal);
+$('del-cancel').addEventListener('click', closeDeleteModal);
+$('del-confirm').addEventListener('click', confirmDelete);
+$('del-with-files').addEventListener('change', updateDeletePreview);
+$('del-modal').addEventListener('mousedown', (e) => {
+  if (e.target === $('del-modal')) closeDeleteModal();
 });
 
 $('modal-close').addEventListener('click', closeModal);
@@ -742,8 +892,20 @@ $('rail-settings').addEventListener('click', () => {
 $('settings-close').addEventListener('click', () => openSettings(false));
 
 ['set-theme', 'set-zoom', 'set-ctx', 'set-timeout', 'set-autochat',
- 'set-loglimit', 'set-logfilter'].forEach((id) => {
+ 'set-loglimit', 'set-logfilter', 'set-tray'].forEach((id) => {
   $(id).addEventListener('change', saveFromPanel);
+});
+
+// 开机自启：直接写注册表，不经过 settings.json
+$('set-autostart').addEventListener('change', async (e) => {
+  const want = e.target.checked;
+  const res = await window.api.autostartSet(want);
+  if (!res.ok) {
+    e.target.checked = !want;
+    toast(res.error || '设置失败', 'err');
+    return;
+  }
+  toast(want ? '已开启开机自启' : '已关闭开机自启', 'ok');
 });
 
 $('btn-browse-server').addEventListener('click', async () => {

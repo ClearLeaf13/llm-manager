@@ -11,6 +11,10 @@ const os = require('os');
 const { SERVER_EXE, MODELS_DIR, MODELS, buildArgs, resolveModels, detectLlamaDir } = require('./models');
 const store = require('./store');
 const scanner = require('./scanner');
+const trash = require('./trash');
+
+/** 开机自启在注册表 Run 项里的名称 */
+const AUTOSTART_KEY = 'llama.cpp-manager';
 
 /** 当前生效的模型目录（设置可覆盖；否则自动探测） */
 function currentModelsDir() {
@@ -49,6 +53,7 @@ const DEFAULT_SETTINGS = {
   logSysOnly: false,      // 默认只显示系统与错误
   serverExe: SERVER_EXE,  // llama-server 路径
   modelsDir: MODELS_DIR,  // 模型目录
+  closeToTray: true,      // 点关闭时隐藏到托盘而非退出
 };
 
 let settings = { ...DEFAULT_SETTINGS };
@@ -403,8 +408,14 @@ function broadcastStatus() {
 }
 
 /* ------------------------------------------------------------------ *
- * 窗口
+ * 窗口 + 托盘
  * ------------------------------------------------------------------ */
+
+/** 真正退出时置为 true，用于区分"关窗"与"退出应用" */
+let quitting = false;
+
+/** 托盘是否可用；不可用时"关闭到托盘"要降级为直接退出 */
+let trayReady = false;
 
 function createWindow() {
   win = new BrowserWindow({
@@ -429,7 +440,103 @@ function createWindow() {
   win.on('maximize', () => win.webContents.send('window-state', { maximized: true }));
   win.on('unmaximize', () => win.webContents.send('window-state', { maximized: false }));
 
+  // 关闭窗口 = 隐藏到托盘，应用与 llama-server 继续运行
+  win.on('close', (e) => {
+    if (quitting) return;                          // 真正退出，放行
+    if (settings.closeToTray === false) return;    // 用户关掉了该行为
+    if (!trayReady) {                              // 托盘不可用则正常退出
+      quitting = true;
+      return;
+    }
+    e.preventDefault();
+    win.hide();
+    notifyTray('已最小化到托盘，llama-server 继续运行');
+  });
+
   win.on('closed', () => { win = null; });
+}
+
+let tray = null;
+
+function notifyTray(msg) {
+  if (tray && process.platform === 'win32') {
+    try { tray.displayBalloon({ title: 'llama.cpp 管理器', content: msg }); } catch (_) {}
+  }
+}
+
+/** 生成托盘图标：16x16 的圆角方块 + 中间亮点 */
+function makeTrayIcon() {
+  const { nativeImage } = require('electron');
+  const size = 16;
+  const buf = Buffer.alloc(size * size * 4);
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const i = (y * size + x) * 4;
+      const cx = x - 7.5;
+      const cy = y - 7.5;
+      const d = Math.sqrt(cx * cx + cy * cy);
+
+      let a = 0;                    // 透明度
+      let r = 47, g = 111, b = 235; // 主题蓝
+
+      if (d < 6.5) {
+        a = 255;                    // 实心圆
+      } else if (d < 7.5) {
+        a = Math.round((7.5 - d) * 255); // 边缘抗锯齿
+      }
+
+      // 中心挖一个小孔，让图标更易辨识
+      if (d < 2.2) { a = 0; }
+
+      buf[i] = b; buf[i + 1] = g; buf[i + 2] = r; buf[i + 3] = a;
+    }
+  }
+
+  return nativeImage.createFromBuffer(buf, { width: size, height: size });
+}
+
+function createTray() {
+  if (tray) return;
+  try {
+    const { Tray, Menu } = require('electron');
+    tray = new Tray(makeTrayIcon());
+    tray.setToolTip('llama.cpp 管理器');
+
+    const menu = Menu.buildFromTemplate([
+      { label: '显示窗口', click: () => showWindow() },
+      { type: 'separator' },
+      { label: '打开数据目录', click: () => { shell.openPath(app.getPath('userData')); } },
+      { type: 'separator' },
+      { label: '退出', click: () => quitApp() },
+    ]);
+    tray.setContextMenu(menu);
+
+    tray.on('double-click', () => showWindow());
+    tray.on('click', () => showWindow());
+    trayReady = true;
+  } catch (e) {
+    // 托盘不可用时降级：关闭窗口即退出，避免变成找不到的幽灵进程
+    trayReady = false;
+    console.warn('[tray] 托盘创建失败，关闭窗口将直接退出:', e.message);
+  }
+}
+
+/** 把窗口显示出来并聚焦 */
+function showWindow() {
+  if (!win || win.isDestroyed()) {
+    createWindow();
+    return;
+  }
+  if (win.isMinimized()) win.restore();
+  if (!win.isVisible()) win.show();
+  win.focus();
+}
+
+/** 真正退出应用 */
+function quitApp() {
+  quitting = true;
+  app.quit();
 }
 
 /* ------------------------------------------------------------------ *
@@ -507,7 +614,7 @@ ipcMain.handle('models-update', (_e, id, patch) => {
   return res;
 });
 
-/** 删除模型 */
+/** 删除模型（仅从列表移除，不动文件）—— 保留给单条删除用 */
 ipcMain.handle('models-delete', (_e, id) => {
   if (currentModel && currentModel.id === id) {
     return { ok: false, error: '模型正在运行，请先停止再删除' };
@@ -515,6 +622,133 @@ ipcMain.handle('models-delete', (_e, id) => {
   const res = store.remove(id);
   if (res.ok) broadcastStatus();
   return res;
+});
+
+/** 批量删除预览：列出将被删除的文件与总大小 */
+ipcMain.handle('models-delete-preview', (_e, ids) => {
+  const list = Array.isArray(ids) ? ids : [ids];
+  const models = list
+    .map((id) => modelWithPath(id))
+    .filter(Boolean);
+
+  if (!models.length) return { ok: false, error: '未找到要删除的模型' };
+
+  const running = models.filter((m) => currentModel && currentModel.id === m.id);
+  const pv = trash.preview(models, currentModelsDir());
+
+  return {
+    ok: true,
+    items: pv.items,
+    totalGb: pv.totalGb,
+    warnings: pv.warnings,
+    running: running.map((m) => m.name),
+  };
+});
+
+/**
+ * 批量删除模型：移入回收站 + 从配置移除。
+ * @param {string[]} ids 模型 id
+ * @param {boolean} withFiles 是否同时删除文件
+ */
+ipcMain.handle('models-delete-batch', async (_e, ids, withFiles) => {
+  const list = Array.isArray(ids) ? ids : [ids];
+  const models = list.map((id) => modelWithPath(id)).filter(Boolean);
+  if (!models.length) return { ok: false, error: '未找到要删除的模型' };
+
+  // 运行中的模型一律拒绝
+  const running = models.filter((m) => currentModel && currentModel.id === m.id);
+  if (running.length) {
+    return {
+      ok: false,
+      error: `以下模型正在运行，请先停止：${running.map((m) => m.name).join('、')}`,
+    };
+  }
+
+  const dir = currentModelsDir();
+  let trashed = 0;
+  const failed = [];
+  const skipped = [];
+
+  if (withFiles) {
+    for (const m of models) {
+      const { files, outside } = trash.collectFiles(m, dir);
+      for (const o of outside) skipped.push({ name: m.name, path: o });
+
+      const targets = files.filter((f) => f.exists).map((f) => f.path);
+      for (const t of targets) {
+        try {
+          await shell.trashItem(t);
+          trashed += 1;
+        } catch (e) {
+          failed.push({ name: path.basename(t), error: e.message || String(e) });
+        }
+      }
+    }
+  }
+
+  // 文件处理完再改配置；配置写入失败也不回滚已删文件（文件已进回收站，可恢复）
+  const removedIds = [];
+  for (const m of models) {
+    const r = store.remove(m.id);
+    if (r.ok) removedIds.push(m.id);
+    else failed.push({ name: m.name, error: r.error });
+  }
+
+  broadcastStatus();
+
+  return {
+    ok: true,
+    removed: removedIds.length,
+    trashed,
+    failed,
+    skipped,
+  };
+});
+
+/* --- 开机自启 --- */
+
+ipcMain.handle('autostart-get', () => {
+  if (process.platform !== 'win32') return { ok: true, enabled: false, supported: false };
+  try {
+    const r = require('child_process').execFileSync('reg', [
+      'query',
+      'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run',
+      '/v', AUTOSTART_KEY,
+    ], { windowsHide: true, encoding: 'utf8' });
+    return { ok: true, enabled: /REG_SZ/.test(r), supported: true };
+  } catch (_) {
+    // 查询失败通常表示该项不存在
+    return { ok: true, enabled: false, supported: true };
+  }
+});
+
+ipcMain.handle('autostart-set', (_e, enable) => {
+  if (process.platform !== 'win32') {
+    return { ok: false, error: '仅支持 Windows' };
+  }
+  const exe = app.getPath('exe');
+  try {
+    if (enable) {
+      require('child_process').execFileSync('reg', [
+        'add',
+        'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run',
+        '/v', AUTOSTART_KEY,
+        '/t', 'REG_SZ',
+        '/d', `"${exe}"`,
+        '/f',
+      ], { windowsHide: true });
+    } else {
+      require('child_process').execFileSync('reg', [
+        'delete',
+        'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run',
+        '/v', AUTOSTART_KEY,
+        '/f',
+      ], { windowsHide: true });
+    }
+    return { ok: true, enabled: !!enable };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
 });
 
 /** 恢复预置模型（保留自定义的） */
@@ -526,6 +760,41 @@ ipcMain.handle('models-reset', () => {
 
 /** 取下一个可用端口（新增表单预填用） */
 ipcMain.handle('models-next-port', () => store.nextPort());
+
+/** 磁盘占用：模型目录所在盘的空闲/总量，以及模型文件合计大小 */
+ipcMain.handle('disk-usage', () => {
+  const dir = currentModelsDir();
+  const stat = fs.statSync(dir, { throwIfNoEntry: false });
+  const drive = stat ? dir : path.parse(dir).root;
+
+  let freeGb = 0;
+  let totalGb = 0;
+  try {
+    if (typeof fs.statfsSync === 'function') {
+      const s = fs.statfsSync(drive);
+      freeGb = (s.bfree * s.bsize) / 1024 ** 3;
+      totalGb = (s.blocks * s.bsize) / 1024 ** 3;
+    }
+  } catch (_) { /* 取不到就留 0 */ }
+
+  // 已配置模型的文件合计
+  let usedGb = 0;
+  for (const m of modelsWithPaths()) {
+    try {
+      if (fs.existsSync(m.filePath)) usedGb += fs.statSync(m.filePath).size / 1024 ** 3;
+      if (m.mmprojPath && fs.existsSync(m.mmprojPath)) {
+        usedGb += fs.statSync(m.mmprojPath).size / 1024 ** 3;
+      }
+    } catch (_) { /* 忽略 */ }
+  }
+
+  return {
+    dir: drive,
+    freeGb,
+    totalGb,
+    usedGb,
+  };
+});
 
 ipcMain.handle('open-url', (_e, url) => { shell.openExternal(url); return true; });
 
@@ -574,7 +843,8 @@ ipcMain.on('win-maximize', () => {
   if (!win) return;
   if (win.isMaximized()) win.unmaximize(); else win.maximize();
 });
-ipcMain.on('win-close', () => win && win.close());
+ipcMain.on('win-close', () => { if (win) win.close(); });
+ipcMain.on('win-hide', () => { if (win) win.hide(); });
 
 /* ------------------------------------------------------------------ *
  * 单实例锁
@@ -589,16 +859,12 @@ if (!gotLock) {
   app.quit();
 } else {
   app.on('second-instance', () => {
-    // 用户重复执行了启动：把最初那个窗口唤到前台
-    if (!win || win.isDestroyed()) {
-      createWindow();
-      return;
+    // 用户重复执行了启动：把窗口唤到前台（可能在托盘里藏着）
+    showWindow();
+    if (win && !win.isDestroyed()) {
+      win.setAlwaysOnTop(true);
+      win.setAlwaysOnTop(false);
     }
-    if (win.isMinimized()) win.restore();
-    if (!win.isVisible()) win.show();
-    win.focus();
-    win.setAlwaysOnTop(true);
-    win.setAlwaysOnTop(false);
   });
 }
 
@@ -616,10 +882,12 @@ app.whenReady().then(() => {
   // 模型配置存储：首次启动用预置数据播种
   store.init(app.getPath('userData'));
 
+  // 先建托盘，再建窗口 —— 窗口的 close 处理依赖 trayReady
+  createTray();
   createWindow();
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    showWindow();
   });
 
   // 定期刷新状态
@@ -628,13 +896,16 @@ app.whenReady().then(() => {
   }, 5000);
 });
 
+// 关闭窗口不退出应用 —— 留在托盘继续跑（llama-server 不受影响）
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
+  // 显式退出时才会走到这里（quitting=true 由 quitApp 设置）
+  if (quitting && process.platform !== 'darwin') app.quit();
 });
 
 // 退出前确保不留下孤儿进程（但不动用户手动启动的服务）
 // 注意：没抢到单实例锁的进程 child 恒为 null，不会误杀在跑的 llama-server
 app.on('before-quit', () => {
+  quitting = true;
   if (!gotLock) return;
   if (child) {
     try { child.kill(); } catch (_) {}

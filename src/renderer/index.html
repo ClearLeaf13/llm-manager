@@ -75,6 +75,7 @@
       <button class="mini" id="btn-scan" title="扫描模型目录，自动发现 gguf 文件">自动扫描</button>
       <button class="mini primary" id="btn-add" title="手动添加一个模型">添加模型</button>
       <button class="mini" id="btn-reset-models" title="恢复内置的三套预置模型">恢复预置</button>
+      <button class="mini danger right" id="btn-delete-models" title="删除模型（可选择是否同时删除本地文件）">删除模型</button>
     </div>
 
     <!-- 扫描结果 -->
@@ -116,6 +117,10 @@
       <div class="stat">
         <span class="label">PID</span>
         <span class="value mono" id="st-pid">—</span>
+      </div>
+      <div class="stat">
+        <span class="label">磁盘</span>
+        <span class="value mono" id="st-disk">—</span>
       </div>
     </div>
 
@@ -195,6 +200,18 @@
         <div class="srow">
           <label>默认只显示系统与错误</label>
           <input type="checkbox" id="set-logfilter" class="switch" />
+        </div>
+      </div>
+
+      <div class="sgroup">
+        <div class="sgroup-title">系统</div>
+        <div class="srow">
+          <label>关闭窗口时最小化到托盘</label>
+          <input type="checkbox" id="set-tray" class="switch" />
+        </div>
+        <div class="srow">
+          <label>开机自动启动</label>
+          <input type="checkbox" id="set-autostart" class="switch" />
         </div>
       </div>
 
@@ -298,8 +315,40 @@
   </div>
 </div>
 
-<div class="toast" id="toast"></div>
+<!-- ============ 批量删除弹窗 ============ -->
+<div class="modal" id="del-modal" hidden>
+  <div class="modal-card">
+    <div class="modal-head">
+      <h1>删除模型</h1>
+      <button class="ghost" id="del-close">关闭</button>
+    </div>
 
+    <div class="modal-body">
+      <div class="del-tip">
+        勾选要删除的模型。文件会移入<b>回收站</b>，误删可从回收站还原。
+      </div>
+
+      <div class="del-list" id="del-list"></div>
+
+      <div class="del-preview" id="del-preview"></div>
+
+      <label class="chk del-files">
+        <input type="checkbox" id="del-with-files" checked />
+        同时删除本地文件（含关联的视觉投影文件）
+      </label>
+    </div>
+
+    <div class="modal-foot">
+      <span class="fhint err" id="del-error"></span>
+      <div class="modal-btns">
+        <button class="ghost" id="del-cancel">取消</button>
+        <button class="mini danger" id="del-confirm" disabled>确认删除</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
 <script src="renderer.js"></script>
 </body>
 </html>
