@@ -67,8 +67,7 @@ npm run dist
 
 1. 环境变量 `LLM_MANAGER_DIR`
 2. `%USERPROFILE%\llama.cpp`
-3. `C:\Users\Administrator\llama.cpp`
-4. `%USERPROFILE%\Documents\默认工作区\llama-cpp`
+3. `%USERPROFILE%\Documents\默认工作区\llama-cpp`
 
 目录结构应为：
 

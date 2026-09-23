@@ -18,9 +18,8 @@ const fs = require('fs');
 /** 候选根目录：按顺序取第一个存在 llama-server.exe 的（由近及远，自动去重） */
 const LLAMA_DIR_CANDIDATES = [...new Set([
   process.env.LLM_MANAGER_DIR,                              // 1. 环境变量优先
-  path.join(os.homedir(), 'llama.cpp'),                     // 2. 用户主目录
-  'C:\\Users\\Administrator\\llama.cpp',                    // 3. 历史位置
-  path.join(os.homedir(), 'Documents', '默认工作区', 'llama-cpp'), // 4. 更早的位置
+  path.join(os.homedir(), 'llama.cpp'),                     // 2. 用户主目录下
+  path.join(os.homedir(), 'Documents', '默认工作区', 'llama-cpp'), // 3. 历史位置
 ].filter(Boolean).map((p) => path.resolve(p)))];
 
 /** 兜底目录（都不存在时使用，便于界面提示用户手动指定） */
