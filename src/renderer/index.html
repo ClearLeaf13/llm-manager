@@ -33,8 +33,11 @@
   <!-- ============ 最左：图标侧边栏（可扩展） ============ -->
   <nav class="rail" id="rail">
     <div class="rail-group" id="rail-views">
-      <button class="rail-btn active" data-view="models" title="模型" aria-label="模型">
+      <button class="rail-btn active" data-view="models" title="快速启用" aria-label="快速启用">
         <svg viewBox="0 0 20 20"><rect x="3" y="3" width="6.5" height="6.5" rx="1.6"/><rect x="10.5" y="3" width="6.5" height="6.5" rx="1.6"/><rect x="3" y="10.5" width="6.5" height="6.5" rx="1.6"/><rect x="10.5" y="10.5" width="6.5" height="6.5" rx="1.6"/></svg>
+      </button>
+      <button class="rail-btn" data-view="manage" title="模型管理" aria-label="模型管理">
+        <svg viewBox="0 0 20 20"><path d="M3 5.2h9M3 10h9M3 14.8h6"/><circle cx="15.4" cy="14.6" r="2.6"/><path d="M15.4 12.9v3.4M13.7 14.6h3.4"/></svg>
       </button>
       <button class="rail-btn" data-view="console" title="日志" aria-label="日志">
         <svg viewBox="0 0 20 20"><path d="M4 5.5h12M4 10h12M4 14.5h8"/></svg>
@@ -54,11 +57,40 @@
   <!-- ============ 模型列表 ============ -->
   <section class="pane models" id="pane-models">
     <div class="pane-head">
-      <h1>模型</h1>
+      <h1>快速启用</h1>
       <span class="hint">一次仅运行一个</span>
     </div>
     <div id="model-list" class="model-list"></div>
   </section>
+
+  <!-- ============ 模型管理 ============ -->
+  <section class="pane manage hidden" id="pane-manage">
+    <div class="pane-head">
+      <h1>模型管理</h1>
+      <span class="hint" id="manage-count"></span>
+    </div>
+
+    <!-- 工具条 -->
+    <div class="manage-bar">
+      <button class="mini" id="btn-scan" title="扫描模型目录，自动发现 gguf 文件">自动扫描</button>
+      <button class="mini primary" id="btn-add" title="手动添加一个模型">添加模型</button>
+      <button class="mini" id="btn-reset-models" title="恢复内置的三套预置模型">恢复预置</button>
+    </div>
+
+    <!-- 扫描结果 -->
+    <div class="scan-box" id="scan-box" hidden>
+      <div class="scan-head">
+        <span id="scan-title">扫描结果</span>
+        <button class="ghost tiny" id="scan-close">收起</button>
+      </div>
+      <div class="scan-list" id="scan-list"></div>
+    </div>
+
+    <!-- 模型列表 -->
+    <div class="manage-list" id="manage-list"></div>
+  </section>
+
+  <div class="splitter hidden" id="split-2" title="拖动调整宽度"></div>
 
   <div class="splitter" id="split-1" title="拖动调整宽度"></div>
 
@@ -192,6 +224,78 @@
     </div>
   </aside>
 
+</div>
+
+<!-- ============ 模型编辑弹窗 ============ -->
+<div class="modal" id="modal" hidden>
+  <div class="modal-card">
+    <div class="modal-head">
+      <h1 id="modal-title">添加模型</h1>
+      <button class="ghost" id="modal-close">关闭</button>
+    </div>
+
+    <div class="modal-body">
+      <div class="frow">
+        <label>名称 <span class="req">*</span></label>
+        <input type="text" id="f-name" placeholder="显示在快速启用列表里的名字" spellcheck="false" />
+      </div>
+
+      <div class="frow">
+        <label>模型文件 <span class="req">*</span></label>
+        <div class="finput">
+          <select id="f-file"></select>
+          <button class="ghost" id="f-file-refresh" title="重新扫描目录">刷新</button>
+        </div>
+        <div class="fhint" id="f-file-hint">从模型目录中选择 gguf 文件</div>
+      </div>
+
+      <div class="frow">
+        <label>视觉投影 (mmproj)</label>
+        <select id="f-mmproj">
+          <option value="">（无）</option>
+        </select>
+        <div class="fhint">仅多模态模型需要，普通模型留空</div>
+      </div>
+
+      <div class="frow2">
+        <div class="frow">
+          <label>API 别名</label>
+          <input type="text" id="f-alias" placeholder="留空则同名称" spellcheck="false" />
+          <div class="fhint">调用 API 时的 model 字段</div>
+        </div>
+        <div class="frow">
+          <label>端口</label>
+          <input type="number" id="f-port" min="1" max="65535" />
+          <div class="fhint">每个模型需独占端口</div>
+        </div>
+      </div>
+
+      <div class="frow2">
+        <div class="frow">
+          <label>上下文</label>
+          <div class="finput">
+            <input type="number" id="f-ctx" min="1" max="1024" step="1" value="32" />
+            <span class="unit">K</span>
+          </div>
+        </div>
+        <div class="frow">
+          <label>选项</label>
+          <div class="fchecks">
+            <label class="chk"><input type="checkbox" id="f-vision" /> 多模态</label>
+            <label class="chk"><input type="checkbox" id="f-mtp" /> MTP</label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-foot">
+      <span class="fhint" id="modal-error"></span>
+      <div class="modal-btns">
+        <button class="ghost" id="modal-cancel">取消</button>
+        <button class="mini primary" id="modal-save">保存</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <div class="toast" id="toast"></div>

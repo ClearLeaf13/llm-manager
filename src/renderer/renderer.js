@@ -227,10 +227,23 @@ function switchView(view) {
   document.querySelectorAll('.rail-btn[data-view]').forEach((b) => {
     b.classList.toggle('active', b.dataset.view === view);
   });
+
   const showModels = view === 'models';
+  const showManage = view === 'manage';
+
   $('pane-models').classList.toggle('hidden', !showModels);
-  $('split-1').classList.toggle('hidden', !showModels || $('settings').hidden === false);
+  $('pane-manage').classList.toggle('hidden', !showManage);
+
+  // 左栏分栏条只在快速启用视图下出现
+  $('split-1').classList.toggle('hidden',
+    !showModels || $('settings').hidden === false);
+  // 管理视图占满主区，分栏条隐藏
+  $('split-2').classList.add('hidden');
+
   $('pane-console').classList.remove('hidden');
+
+  // 进管理视图时刷新一次列表
+  if (showManage) refreshManage();
 }
 
 /* ------------------------------------------------------------------ *
@@ -275,6 +288,321 @@ function initSplitter() {
   sp.addEventListener('mousedown', onDown);
   window.addEventListener('mousemove', onMove);
   window.addEventListener('mouseup', onUp);
+}
+
+/* ------------------------------------------------------------------ *
+ * 模型管理
+ * ------------------------------------------------------------------ */
+
+let MANAGED = [];        // 管理界面的模型列表（含元信息）
+let SCAN_FILES = [];     // 最近一次扫描结果
+let editingId = null;    // 正在编辑的模型 id；null 表示新增
+
+const fmtGb = (n) => (n ? n.toFixed(2) + ' GB' : '—');
+
+/** 加载并渲染管理列表 */
+async function refreshManage() {
+  MANAGED = await window.api.modelsList();
+  renderManage();
+}
+
+function renderManage() {
+  const box = $('manage-list');
+  const count = MANAGED.length;
+  $('manage-count').textContent = count ? `共 ${count} 个` : '';
+  box.innerHTML = '';
+
+  if (!count) {
+    box.innerHTML = '<div class="empty">还没有配置任何模型<br>点击上方「添加模型」或「自动扫描」开始</div>';
+    return;
+  }
+
+  MANAGED.forEach((m) => {
+    const isActive = STATUS.current === m.id;
+    const row = document.createElement('div');
+    row.className = 'mrow'
+      + (isActive ? ' active' : '')
+      + (!m.fileExists ? ' missing' : '');
+
+    const badges = [];
+    if (m.vision) badges.push('<span class="badge v">视觉</span>');
+    if (m.useMtp) badges.push('<span class="badge mtp">MTP</span>');
+    if (isActive) badges.push('<span class="badge run">运行中</span>');
+    if (!m.fileExists) badges.push('<span class="badge off">文件缺失</span>');
+
+    const info = [
+      `<span class="k">文件</span> ${esc(m.file)}`,
+      `<span class="k">大小</span> ${fmtGb(m.sizeGb)} · <span class="k">端口</span> ${m.port} · <span class="k">上下文</span> ${m.ctxK}K`,
+      `<span class="k">别名</span> ${esc(m.alias)}`,
+    ];
+    if (m.mmproj) {
+      info.push(`<span class="k">投影</span> ${esc(m.mmproj)}${m.mmprojExists ? '' : ' <span style="color:var(--err)">(缺失)</span>'}`);
+    }
+
+    row.innerHTML = `
+      <div class="mrow-top">
+        <span class="mrow-name">${esc(m.name)}</span>
+        ${badges.join('')}
+      </div>
+      <div class="mrow-info">${info.join('<br>')}</div>
+    `;
+
+    const acts = document.createElement('div');
+    acts.className = 'mrow-actions';
+
+    const edit = document.createElement('button');
+    edit.className = 'mini';
+    edit.textContent = '编辑';
+    edit.addEventListener('click', () => openModal(m.id));
+    acts.appendChild(edit);
+
+    const del = document.createElement('button');
+    del.className = 'mini danger';
+    del.textContent = '删除';
+    del.disabled = isActive;
+    if (isActive) del.title = '模型正在运行，请先停止';
+    del.addEventListener('click', () => doDelete(m));
+    acts.appendChild(del);
+
+    row.appendChild(acts);
+    box.appendChild(row);
+  });
+}
+
+/** 删除模型（带确认） */
+async function doDelete(m) {
+  if (!confirm(`确定删除模型「${m.name}」吗？\n\n只会从列表中移除，不会删除 gguf 文件。`)) return;
+  const res = await window.api.modelsDelete(m.id);
+  if (!res.ok) { toast(res.error || '删除失败', 'err'); return; }
+  toast('已删除', 'ok');
+  await refreshManage();
+  await refresh();
+}
+
+/* --- 扫描 --- */
+
+async function doScan() {
+  const btn = $('btn-scan');
+  btn.disabled = true;
+  btn.textContent = '扫描中…';
+
+  const res = await window.api.modelsScan(SETTINGS.modelsDir);
+  btn.disabled = false;
+  btn.textContent = '自动扫描';
+
+  if (!res.ok) { toast(res.error || '扫描失败', 'err'); return; }
+
+  SCAN_FILES = res.files || [];
+  renderScan(res.dir);
+
+  if (!SCAN_FILES.length) toast('目录中没有找到 gguf 文件', 'err');
+  else toast(`扫描到 ${SCAN_FILES.length} 个文件`, 'ok');
+}
+
+function renderScan(dir) {
+  const box = $('scan-box');
+  const list = $('scan-list');
+  box.hidden = false;
+
+  const mains = SCAN_FILES.filter((f) => !f.mmproj).length;
+  const projs = SCAN_FILES.length - mains;
+  $('scan-title').textContent =
+    `扫描结果：${mains} 个模型${projs ? ` · ${projs} 个投影文件` : ''}`;
+
+  list.innerHTML = '';
+
+  if (!SCAN_FILES.length) {
+    list.innerHTML = `<div class="empty">${esc(dir || '')}<br>没有找到 .gguf 文件</div>`;
+    return;
+  }
+
+  SCAN_FILES.forEach((f) => {
+    const added = MANAGED.some((m) => m.file === f.file);
+
+    const item = document.createElement('div');
+    item.className = 'scan-item' + (added ? ' added' : '');
+
+    const metaBits = [f.sizeGb.toFixed(2) + 'GB'];
+    if (f.quantization) metaBits.push(f.quantization);
+    if (f.meta && f.meta.architecture) metaBits.push(f.meta.architecture);
+    if (f.mmproj) metaBits.unshift('投影');
+
+    item.innerHTML = `
+      <span class="sname" title="${esc(f.file)}">${esc(f.file)}</span>
+      <span class="smeta">${metaBits.join(' · ')}</span>
+    `;
+
+    const add = document.createElement('button');
+    add.className = 'sadd';
+
+    if (f.mmproj) {
+      // 投影文件不能单独作为模型，提示用户去主模型里绑定
+      const owners = MANAGED.filter((m) => m.mmproj === f.file);
+      add.textContent = owners.length ? '已绑定' : '绑定';
+      add.title = owners.length
+        ? `已绑定到「${owners[0].name}」`
+        : '投影文件需绑定到主模型：点主模型的「编辑」，在「视觉投影」里选择它';
+      if (!owners.length) {
+        add.addEventListener('click', () => {
+          toast('请在主模型的「编辑」里，于「视觉投影」中选择该文件', 'ok');
+        });
+      }
+      item.appendChild(add);
+      list.appendChild(item);
+      return;
+    }
+
+    item.classList.toggle('added', added);
+    add.textContent = added ? '已添加' : '添加';
+    if (!added) {
+      add.addEventListener('click', async () => {
+        add.disabled = true;
+        const preset = scanToModel(f);
+        const res = await window.api.modelsCreate(preset);
+        if (!res.ok) {
+          toast(res.error || '添加失败', 'err');
+          add.disabled = false;
+          return;
+        }
+        toast(`已添加「${preset.name}」`, 'ok');
+        await refreshManage();
+        renderScan(dir);
+        await refresh();
+      });
+    }
+    item.appendChild(add);
+    list.appendChild(item);
+  });
+}
+
+/** 从 gguf 元数据推断一个对用户有意义的名称 */
+function bestName(f) {
+  const base = f.file.replace(/\.gguf$/i, '');
+  const m = f.meta || {};
+
+  // 元数据里的 general.name 有时是无意义的占位值
+  const junk = /^(src|safetensors|model|output|gguf|test)$/i;
+  const metaName = (m.name || '').trim();
+
+  if (metaName && !junk.test(metaName) && metaName.length <= 48) {
+    return metaName;
+  }
+
+  // 退而用文件名，去掉量化后缀让名称更干净
+  return base
+    .replace(/[-_.](IQ\d+_[A-Z0-9_]+|Q\d+_K_[A-Z]+|Q\d+_K|Q\d+_\d|F16|F32|BF16)$/i, '')
+    || base;
+}
+
+/** 把扫描结果转成可提交的模型数据 */
+function scanToModel(f) {
+  const base = f.file.replace(/\.gguf$/i, '');
+
+  // 不指定端口 —— 交给主进程用 nextPort() 找一个没被占用的
+  return {
+    name: bestName(f),
+    alias: base,
+    file: f.file,
+    mmproj: null,
+    ctxK: f.meta && f.meta.contextLength
+      ? Math.max(1, Math.round(f.meta.contextLength / 1024))
+      : 32,
+    useMtp: /\bMTP\b/i.test(base),
+    vision: false,
+    port: null,
+  };
+}
+
+/* --- 弹窗 --- */
+
+function fillFileOptions(keepFile, keepMmproj) {
+  const files = SCAN_FILES.filter((f) => !f.mmproj);
+  const projs = SCAN_FILES.filter((f) => f.mmproj);
+
+  const sel = $('f-file');
+  sel.innerHTML = '<option value="">（请选择）</option>'
+    + files.map((f) => `<option value="${esc(f.file)}">${esc(f.file)}</option>`).join('');
+
+  const selP = $('f-mmproj');
+  selP.innerHTML = '<option value="">（无）</option>'
+    + projs.map((f) => `<option value="${esc(f.file)}">${esc(f.file)}</option>`).join('');
+
+  if (keepFile) sel.value = keepFile;
+  if (keepMmproj) selP.value = keepMmproj;
+
+  const known = files.length + projs.length;
+  $('f-file-hint').textContent = known
+    ? `模型目录中扫描到 ${known} 个 gguf 文件`
+    : '未扫描到文件，请先点「刷新」或检查设置里的模型目录';
+}
+
+async function openModal(id) {
+  editingId = id || null;
+  $('modal-error').textContent = '';
+
+  // 打开前先扫一次目录，保证文件列表是最新的
+  const scan = await window.api.modelsScan(SETTINGS.modelsDir);
+  SCAN_FILES = scan.ok ? (scan.files || []) : [];
+
+  const m = id ? MANAGED.find((x) => x.id === id) : null;
+
+  if (m) {
+    $('modal-title').textContent = '编辑模型';
+    $('f-name').value = m.name;
+    $('f-alias').value = m.alias;
+    $('f-port').value = m.port;
+    $('f-ctx').value = m.ctxK;
+    $('f-vision').checked = !!m.vision;
+    $('f-mtp').checked = !!m.useMtp;
+    fillFileOptions(m.file, m.mmproj);
+  } else {
+    $('modal-title').textContent = '添加模型';
+    $('f-name').value = '';
+    $('f-alias').value = '';
+    $('f-port').value = await window.api.modelsNextPort();
+    $('f-ctx').value = SETTINGS.defaultCtxK || 32;
+    $('f-vision').checked = false;
+    $('f-mtp').checked = false;
+    fillFileOptions('', '');
+  }
+
+  $('modal').hidden = false;
+  $('f-name').focus();
+}
+
+function closeModal() {
+  $('modal').hidden = true;
+  editingId = null;
+}
+
+async function saveModal() {
+  const name = $('f-name').value.trim();
+  const file = $('f-file').value;
+  const alias = $('f-alias').value.trim() || name;
+  const port = parseInt($('f-port').value, 10);
+  const ctxK = parseInt($('f-ctx').value, 10) || 32;
+  const mmproj = $('f-mmproj').value || null;
+  const vision = $('f-vision').checked;
+  const useMtp = $('f-mtp').checked;
+
+  const err = $('modal-error');
+
+  if (!name) { err.textContent = '请填写名称'; $('f-name').focus(); return; }
+  if (!file) { err.textContent = '请选择模型文件'; $('f-file').focus(); return; }
+  if (!Number.isFinite(port)) { err.textContent = '端口无效'; $('f-port').focus(); return; }
+
+  const payload = { name, alias, file, mmproj, port, ctxK, vision, useMtp };
+
+  const res = editingId
+    ? await window.api.modelsUpdate(editingId, payload)
+    : await window.api.modelsCreate(payload);
+
+  if (!res.ok) { err.textContent = res.error || '保存失败'; return; }
+
+  toast(editingId ? '已保存' : '已添加', 'ok');
+  closeModal();
+  await refreshManage();
+  await refresh();
 }
 
 /* ------------------------------------------------------------------ *
@@ -362,6 +690,51 @@ document.querySelectorAll('.rail-btn[data-view]').forEach((b) => {
   b.addEventListener('click', () => switchView(b.dataset.view));
 });
 
+// 模型管理
+$('btn-scan').addEventListener('click', doScan);
+$('scan-close').addEventListener('click', () => { $('scan-box').hidden = true; });
+$('btn-add').addEventListener('click', () => openModal(null));
+$('btn-reset-models').addEventListener('click', async () => {
+  if (!confirm('恢复内置的三套预置模型？\n\n会清空当前模型列表并重新导入预置配置，不会删除 gguf 文件。')) return;
+  const res = await window.api.modelsReset();
+  if (!res.ok) { toast(res.error || '恢复失败', 'err'); return; }
+  toast('已恢复预置模型', 'ok');
+  await refreshManage();
+  await refresh();
+});
+
+$('modal-close').addEventListener('click', closeModal);
+$('modal-cancel').addEventListener('click', closeModal);
+$('modal-save').addEventListener('click', saveModal);
+$('modal').addEventListener('mousedown', (e) => {
+  if (e.target === $('modal')) closeModal();   // 点遮罩关闭
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('modal').hidden) closeModal();
+});
+
+// 选文件后自动填名称
+$('f-file').addEventListener('change', () => {
+  const f = SCAN_FILES.find((x) => x.file === $('f-file').value);
+  if (!f) return;
+  if (!$('f-name').value.trim()) {
+    $('f-name').value = bestName(f);
+  }
+  if (!$('f-alias').value.trim()) {
+    $('f-alias').value = f.file.replace(/\.gguf$/i, '');
+  }
+  if (f.meta && f.meta.contextLength) {
+    $('f-ctx').value = Math.max(1, Math.round(f.meta.contextLength / 1024));
+  }
+});
+
+$('f-file-refresh').addEventListener('click', async () => {
+  const scan = await window.api.modelsScan(SETTINGS.modelsDir);
+  SCAN_FILES = scan.ok ? (scan.files || []) : [];
+  fillFileOptions($('f-file').value, $('f-mmproj').value);
+  toast(`已刷新，共 ${SCAN_FILES.length} 个文件`, 'ok');
+});
+
 // 设置
 $('rail-settings').addEventListener('click', () => {
   openSettings($('settings').hidden);
@@ -425,6 +798,7 @@ window.api.onWindowState(() => {});
   const logs = await window.api.getLogs();
   logs.forEach((e) => appendLog(e));
   await refresh();
+  await refreshManage();
   await tickHardware();
   setInterval(tickHardware, 3000);
 })();

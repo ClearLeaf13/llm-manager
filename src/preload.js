@@ -13,6 +13,15 @@ contextBridge.exposeInMainWorld('api', {
   getGpu: () => ipcRenderer.invoke('get-gpu'),
   openUrl: (url) => ipcRenderer.invoke('open-url', url),
 
+  // 模型管理
+  modelsList: () => ipcRenderer.invoke('models-list'),
+  modelsScan: (dir) => ipcRenderer.invoke('models-scan', dir),
+  modelsCreate: (input) => ipcRenderer.invoke('models-create', input),
+  modelsUpdate: (id, patch) => ipcRenderer.invoke('models-update', id, patch),
+  modelsDelete: (id) => ipcRenderer.invoke('models-delete', id),
+  modelsReset: () => ipcRenderer.invoke('models-reset'),
+  modelsNextPort: () => ipcRenderer.invoke('models-next-port'),
+
   getSettings: () => ipcRenderer.invoke('get-settings'),
   saveSettings: (patch) => ipcRenderer.invoke('save-settings', patch),
   resetSettings: () => ipcRenderer.invoke('reset-settings'),

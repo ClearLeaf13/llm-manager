@@ -9,6 +9,8 @@ const http = require('http');
 const os = require('os');
 
 const { SERVER_EXE, MODELS_DIR, MODELS, buildArgs, resolveModels, detectLlamaDir } = require('./models');
+const store = require('./store');
+const scanner = require('./scanner');
 
 /** 当前生效的模型目录（设置可覆盖；否则自动探测） */
 function currentModelsDir() {
@@ -18,9 +20,20 @@ function currentModelsDir() {
   return settings.modelsDir || MODELS_DIR;
 }
 
-/** 取带绝对路径的模型列表 */
+/**
+ * 取带绝对路径的模型列表。
+ * 数据来源是 store（userData/models.json），首次启动时由 models.js
+ * 的预置数据播种，之后完全由界面上的增删改维护。
+ */
 function modelsWithPaths() {
-  return resolveModels(currentModelsDir());
+  return resolveModels(currentModelsDir(), store.all());
+}
+
+/** 取单个带绝对路径的模型 */
+function modelWithPath(id) {
+  const m = store.find(id);
+  if (!m) return null;
+  return resolveModels(currentModelsDir(), [m])[0];
 }
 
 const PROC_NAME = 'llama-server';
@@ -198,7 +211,7 @@ function findLlamaProcesses() {
 async function probeStatus() {
   const pids = await findLlamaProcesses();
   const ports = {};
-  for (const m of MODELS) {
+  for (const m of store.all()) {
     ports[m.port] = await isPortOpen(m.port);
   }
   return {
@@ -247,7 +260,7 @@ function killLlamaProcesses() {
 }
 
 async function startModel(modelId, ctxK) {
-  const model = modelsWithPaths().find((m) => m.id === modelId);
+  const model = modelWithPath(modelId);
   if (!model) return { ok: false, error: `无效模型: ${modelId}` };
 
   // 前置校验：文件是否存在（路径可在设置里覆盖）
@@ -444,6 +457,76 @@ ipcMain.handle('stop', () => stopModel());
 ipcMain.handle('get-logs', () => logBuffer);
 ipcMain.handle('clear-logs', () => { clearLogs(); return true; });
 
+/* --- 模型管理 --- */
+
+/** 模型列表，附带解析后的元信息（供管理界面用） */
+ipcMain.handle('models-list', () => modelsWithPaths().map((m) => ({
+  id: m.id,
+  name: m.name,
+  alias: m.alias,
+  ctxK: m.ctxK,
+  port: m.port,
+  vision: m.vision,
+  useMtp: m.useMtp,
+  file: m.file,
+  mmproj: m.mmproj,
+  filePath: m.filePath,
+  mmprojPath: m.mmprojPath,
+  fileExists: fs.existsSync(m.filePath),
+  mmprojExists: m.mmprojPath ? fs.existsSync(m.mmprojPath) : null,
+  sizeGb: fs.existsSync(m.filePath) ? fs.statSync(m.filePath).size / 1024 ** 3 : 0,
+})));
+
+/** 扫描模型目录 */
+ipcMain.handle('models-scan', (_e, dir) => scanner.scan(dir || currentModelsDir()));
+
+/** 新增模型（自动分配 id 与端口） */
+ipcMain.handle('models-create', (_e, input) => {
+  const payload = { ...(input || {}) };
+  if (payload.port === undefined || payload.port === null || payload.port === '') {
+    payload.port = store.nextPort();
+  }
+  const res = store.create(payload);
+  if (res.ok) broadcastStatus();
+  return res;
+});
+
+/** 修改模型；运行中的模型不允许改端口/文件 */
+ipcMain.handle('models-update', (_e, id, patch) => {
+  const running = currentModel && currentModel.id === id;
+  if (running) {
+    const touched = ['file', 'mmproj', 'port'].some(
+      (k) => patch && Object.prototype.hasOwnProperty.call(patch, k),
+    );
+    if (touched) {
+      return { ok: false, error: '模型正在运行，请先停止再修改文件与端口' };
+    }
+  }
+  const res = store.update(id, patch || {});
+  if (res.ok) broadcastStatus();
+  return res;
+});
+
+/** 删除模型 */
+ipcMain.handle('models-delete', (_e, id) => {
+  if (currentModel && currentModel.id === id) {
+    return { ok: false, error: '模型正在运行，请先停止再删除' };
+  }
+  const res = store.remove(id);
+  if (res.ok) broadcastStatus();
+  return res;
+});
+
+/** 恢复预置模型（保留自定义的） */
+ipcMain.handle('models-reset', () => {
+  const res = store.resetToSeed();
+  broadcastStatus();
+  return res.ok ? { ok: true } : res;
+});
+
+/** 取下一个可用端口（新增表单预填用） */
+ipcMain.handle('models-next-port', () => store.nextPort());
+
 ipcMain.handle('open-url', (_e, url) => { shell.openExternal(url); return true; });
 
 ipcMain.handle('get-gpu', () => queryGpu());
@@ -529,6 +612,9 @@ app.whenReady().then(() => {
 
   loadSettings();
   applyTheme(settings.theme);
+
+  // 模型配置存储：首次启动用预置数据播种
+  store.init(app.getPath('userData'));
 
   createWindow();
 

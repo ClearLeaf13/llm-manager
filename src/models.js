@@ -122,13 +122,15 @@ function buildArgs(model, ctxK) {
 }
 
 /**
- * 把 MODELS 里的文件名解析成绝对路径。
+ * 把模型定义里的文件名解析成绝对路径。
  * @param {string} modelsDir 模型目录（来自设置或自动探测）
+ * @param {Array} [list] 模型数组；不传则用内置的 MODELS
  * @returns {Array} 新的模型数组，附带 filePath / mmprojPath
  */
-function resolveModels(modelsDir) {
+function resolveModels(modelsDir, list) {
   const dir = modelsDir || MODELS_DIR;
-  return MODELS.map((m) => ({
+  const src = Array.isArray(list) ? list : MODELS;
+  return src.map((m) => ({
     ...m,
     filePath: path.join(dir, m.file),
     mmprojPath: m.mmproj ? path.join(dir, m.mmproj) : null,
