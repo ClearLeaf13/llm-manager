@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+<title>llama.cpp 管理器</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- 无边框标题栏 -->
+<header class="titlebar">
+  <div class="tb-left">
+    <span class="dot"></span>
+    <span class="app-name">llama.cpp 管理器</span>
+  </div>
+  <div class="tb-right">
+    <button id="btn-min" class="wbtn" title="最小化" aria-label="最小化">
+      <svg viewBox="0 0 10 10"><path d="M1 5h8" /></svg>
+    </button>
+    <button id="btn-max" class="wbtn" title="最大化" aria-label="最大化">
+      <svg viewBox="0 0 10 10"><rect x="1.2" y="1.2" width="7.6" height="7.6" rx="1.2" /></svg>
+    </button>
+    <button id="btn-close" class="wbtn danger" title="关闭" aria-label="关闭">
+      <svg viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7" /></svg>
+    </button>
+  </div>
+</header>
+
+<div class="shell">
+
+  <!-- ============ 最左：图标侧边栏（可扩展） ============ -->
+  <nav class="rail" id="rail">
+    <div class="rail-group" id="rail-views">
+      <button class="rail-btn active" data-view="models" title="模型" aria-label="模型">
+        <svg viewBox="0 0 20 20"><rect x="3" y="3" width="6.5" height="6.5" rx="1.6"/><rect x="10.5" y="3" width="6.5" height="6.5" rx="1.6"/><rect x="3" y="10.5" width="6.5" height="6.5" rx="1.6"/><rect x="10.5" y="10.5" width="6.5" height="6.5" rx="1.6"/></svg>
+      </button>
+      <button class="rail-btn" data-view="console" title="日志" aria-label="日志">
+        <svg viewBox="0 0 20 20"><path d="M4 5.5h12M4 10h12M4 14.5h8"/></svg>
+      </button>
+    </div>
+
+    <!-- 预留：将来的扩展图标塞这里 -->
+    <div class="rail-group rail-slot" id="rail-slot"></div>
+
+    <div class="rail-group rail-bottom">
+      <button class="rail-btn" id="rail-settings" title="设置" aria-label="设置">
+        <svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="2.6"/><path d="M10 2.6v2.1M10 15.3v2.1M17.4 10h-2.1M4.7 10H2.6M15.2 4.8l-1.5 1.5M6.3 13.7l-1.5 1.5M15.2 15.2l-1.5-1.5M6.3 6.3L4.8 4.8"/></svg>
+      </button>
+    </div>
+  </nav>
+
+  <!-- ============ 模型列表 ============ -->
+  <section class="pane models" id="pane-models">
+    <div class="pane-head">
+      <h1>模型</h1>
+      <span class="hint">一次仅运行一个</span>
+    </div>
+    <div id="model-list" class="model-list"></div>
+  </section>
+
+  <div class="splitter" id="split-1" title="拖动调整宽度"></div>
+
+  <!-- ============ 状态 + 日志 ============ -->
+  <section class="pane console" id="pane-console">
+    <div class="statusbar" id="statusbar">
+      <div class="stat">
+        <span class="label">状态</span>
+        <span class="value" id="st-state">检测中…</span>
+      </div>
+      <div class="stat">
+        <span class="label">模型</span>
+        <span class="value" id="st-model">—</span>
+      </div>
+      <div class="stat">
+        <span class="label">显存</span>
+        <span class="value mono" id="st-vram">—</span>
+      </div>
+      <div class="stat">
+        <span class="label">内存</span>
+        <span class="value mono" id="st-mem">—</span>
+      </div>
+      <div class="stat">
+        <span class="label">PID</span>
+        <span class="value mono" id="st-pid">—</span>
+      </div>
+    </div>
+
+    <div class="log-head">
+      <span>日志</span>
+      <div class="log-actions">
+        <button class="ghost" id="btn-autoscroll">自动滚动：开</button>
+        <button class="ghost" id="btn-clear">清空</button>
+      </div>
+    </div>
+    <div class="log-wrap" id="log-wrap">
+      <div id="log" class="log"></div>
+    </div>
+  </section>
+
+  <!-- ============ 设置面板 ============ -->
+  <aside class="settings" id="settings" hidden>
+    <div class="settings-head">
+      <h1>设置</h1>
+      <button class="ghost" id="settings-close">关闭</button>
+    </div>
+
+    <div class="settings-body">
+
+      <div class="sgroup">
+        <div class="sgroup-title">外观</div>
+        <div class="srow">
+          <label>主题</label>
+          <select id="set-theme">
+            <option value="system">跟随系统</option>
+            <option value="light">浅色</option>
+            <option value="dark">深色</option>
+          </select>
+        </div>
+        <div class="srow">
+          <label>界面缩放</label>
+          <select id="set-zoom">
+            <option value="0.9">90%</option>
+            <option value="1" selected>100%</option>
+            <option value="1.1">110%</option>
+            <option value="1.25">125%</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="sgroup">
+        <div class="sgroup-title">启动行为</div>
+        <div class="srow">
+          <label>默认上下文</label>
+          <div class="sinput">
+            <input type="number" id="set-ctx" min="1" max="512" step="1" value="32" />
+            <span class="unit">K</span>
+          </div>
+        </div>
+        <div class="srow">
+          <label>就绪超时</label>
+          <div class="sinput">
+            <input type="number" id="set-timeout" min="30" max="900" step="10" value="180" />
+            <span class="unit">秒</span>
+          </div>
+        </div>
+        <div class="srow">
+          <label>启动后自动打开对话</label>
+          <input type="checkbox" id="set-autochat" class="switch" />
+        </div>
+      </div>
+
+      <div class="sgroup">
+        <div class="sgroup-title">日志</div>
+        <div class="srow">
+          <label>最大缓存行数</label>
+          <div class="sinput">
+            <input type="number" id="set-loglimit" min="200" max="50000" step="100" value="4000" />
+            <span class="unit">行</span>
+          </div>
+        </div>
+        <div class="srow">
+          <label>默认只显示系统与错误</label>
+          <input type="checkbox" id="set-logfilter" class="switch" />
+        </div>
+      </div>
+
+      <div class="sgroup">
+        <div class="sgroup-title">路径</div>
+        <div class="srow col">
+          <label>llama-server</label>
+          <div class="sinput wide">
+            <input type="text" id="set-server" spellcheck="false" />
+            <button class="ghost" id="btn-browse-server">浏览</button>
+          </div>
+        </div>
+        <div class="srow col">
+          <label>模型目录</label>
+          <div class="sinput wide">
+            <input type="text" id="set-modelsdir" spellcheck="false" />
+            <button class="ghost" id="btn-browse-models">浏览</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="settings-foot">
+      <button class="ghost" id="btn-reset">恢复默认</button>
+      <span class="saved-hint" id="saved-hint"></span>
+    </div>
+  </aside>
+
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="renderer.js"></script>
+</body>
+</html>

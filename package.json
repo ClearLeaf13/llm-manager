@@ -1,0 +1,32 @@
+{
+  "name": "llm-manager",
+  "version": "1.0.0",
+  "description": "llama.cpp 管理器 — 模型切换与实时日志",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win --x64"
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^36.9.5",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "local.llm.manager",
+    "productName": "llama.cpp管理器",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ]
+    },
+    "portable": {
+      "artifactName": "llama.cpp管理器.exe"
+    }
+  }
+}
