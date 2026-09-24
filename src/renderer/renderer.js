@@ -62,6 +62,10 @@ function applyLogFilter() {
  * ------------------------------------------------------------------ */
 
 function renderModels() {
+  // 有输入框正在编辑时不要整块重建 —— 重建会销毁输入框，
+  // 用户刚敲进去的值会被 m.ctxK 覆盖回去（"改了又变回去"的现场）
+  if (ctxEditing()) return;
+
   const box = $('model-list');
   box.innerHTML = '';
 
@@ -82,6 +86,9 @@ function renderModels() {
     // 运行中禁用上下文输入 —— 用与 isActive 相同的判断，避免按钮显示「停止」
     // 但输入框却还能改（外部启动的实例只满足 ports 条件）
     const ctxLocked = isActive;
+    const ctxTip = ctxLocked
+      ? '模型运行中，需停止后修改'
+      : 'K tokens；改完自动保存到配置，下次启动生效，点「启动」则本次立即生效';
 
     card.innerHTML = `
       <div class="card-top">
@@ -90,12 +97,10 @@ function renderModels() {
       </div>
       <div class="card-meta">
         ${m.sizeGb ? m.sizeGb.toFixed(2) + ' GB' : '文件缺失'} · 端口 ${m.port}
-        ${ctxLocked ? ' · <span class="lock">运行中不可改，需停止后修改</span>' : ''}
       </div>
       <div class="card-foot">
         <input type="number" min="1" max="512" step="1" value="${m.ctxK}"
-               data-ctx="${m.id}" ${ctxLocked ? 'disabled' : ''}
-               title="${ctxLocked ? '模型运行中，上下文需停止后修改（修改后保存到配置，下次启动生效）' : '启动时使用的上下文，改完点「启动」立即生效'}" />
+               data-ctx="${m.id}" ${ctxLocked ? 'disabled' : ''} title="${ctxTip}" />
         <span class="unit">K = <b>${m.ctxK * 1024}</b> tokens</span>
       </div>
     `;
@@ -125,10 +130,81 @@ function renderModels() {
       unit.innerHTML = `K = <b>${k * 1024}</b> tokens`;
     };
     inp.addEventListener('input', syncUnit);
+
+    // 改完就落盘。以前这个框只在本次启动生效、不写回配置，卡片每 5 秒重绘
+    // 时又用 m.ctxK 填回去，看起来就像"改不了"。
+    inp.addEventListener('change', () => {
+      // busy 期间禁止被重绘覆盖，避免用户还在编辑时框里的值被刷回旧值
+      inp.dataset.busy = '1';
+      saveCtx(m.id, inp.value, inp);
+    });
+
+    // 正在编辑的框不被重绘覆盖（renderModels 会整块重建卡片 DOM）
+    inp.addEventListener('focus', () => { inp.dataset.busy = '1'; });
+    inp.addEventListener('blur', () => {
+      inp.dataset.busy = '';
+      // 编辑期间重绘被跳过，失焦后补一次，把卡片刷成当前真实状态
+      refresh();
+    });
+
     syncUnit();
 
     box.appendChild(card);
   });
+}
+
+/**
+ * 把「快速启用」卡片里改的上下文写回配置。
+ *
+ * 这个框既当本次启动的参数（点「启动」时直接读它），也负责落盘，
+ * 否则卡片重绘 / 重启应用就变回 models.json 里的旧值。
+ *
+ * @param {string} id 模型 id
+ * @param {string|number} raw 输入框里的原始值
+ * @param {HTMLInputElement} inp 输入框本体
+ */
+async function saveCtx(id, raw, inp) {
+  const k = Math.round(Number(raw));
+  if (!Number.isFinite(k) || k < 1) {
+    const cur = MODELS.find((x) => x.id === id);
+    if (cur) {
+      inp.value = String(cur.ctxK);
+      inp.dispatchEvent(new Event('input'));
+    }
+    inp.dataset.busy = '';
+    return;
+  }
+
+  // 数值没变就不写盘，避免无意义的重绘
+  if (String(k) === String(raw)) {
+    const cur0 = MODELS.find((x) => x.id === id);
+    if (cur0 && cur0.ctxK === k) {
+      inp.dataset.busy = '';
+      return;
+    }
+  }
+
+  const res = await window.api.modelsUpdate(id, { ctxK: k });
+  if (res.ok) {
+    inp.value = String(k);
+    inp.dispatchEvent(new Event('input'));
+    await refresh();
+    toast(`上下文已保存为 ${k}K，下次启动生效`, 'ok');
+  } else {
+    $('modal-error').textContent = res.error || '保存失败';
+    toast(res.error || '保存失败', 'err');
+    const cur = MODELS.find((x) => x.id === id);
+    if (cur) {
+      inp.value = String(cur.ctxK);
+      inp.dispatchEvent(new Event('input'));
+    }
+  }
+  inp.dataset.busy = '';
+}
+
+/** 是否有上下文输入框正在被编辑 —— 用于避免重绘把用户输入刷掉 */
+function ctxEditing() {
+  return !!document.querySelector('#model-list input[data-ctx][data-busy="1"]');
 }
 
 function renderStatus() {
