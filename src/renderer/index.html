@@ -166,6 +166,23 @@
       <!-- 引擎徽标：一眼看出这个模型走哪条路径 -->
       <div class="engine-tag" id="p-engine-tag" hidden></div>
 
+      <!-- 上下文：这里是唯一可改的地方（首页卡片只读展示） -->
+      <div class="pgroup">
+        <div class="pgroup-title">上下文</div>
+
+        <div class="prow">
+          <label>上下文长度</label>
+          <div class="pinput">
+            <input type="number" id="p-ctx" min="1" max="1024" step="1" value="32" />
+            <span class="unit">K</span>
+            <span class="pinput-note" id="p-ctx-note"></span>
+          </div>
+          <div class="phint">
+            单位 K（1K = 1024 tokens）。改完点「保存参数」落盘，下次启动生效；模型运行中也能改
+          </div>
+        </div>
+      </div>
+
       <!-- 参数开关 -->
       <div class="pgroup">
         <div class="pgroup-title">显存与卸载</div>

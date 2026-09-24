@@ -185,16 +185,19 @@ global.window = {
 };
 
 const MODELS_STUB = [
+  // file 是文件名，filePath 是绝对路径 —— 和真实 models-list 返回的一致
   { id: 'reap', name: 'Qwen3.6-VL-REAP-26B', alias: 'REAP-26B', ctxK: 90, port: 8082,
     vision: true, useMtp: false, engine: 'llamacpp', ninfer: null,
-    file: 'C:\\m\\reap.gguf', fileExists: true, mmproj: 'C:\\m\\mm.gguf', mmprojExists: true,
+    file: 'reap.gguf', filePath: 'C:\\m\\reap.gguf', fileExists: true,
+    mmproj: 'mm.gguf', mmprojPath: 'C:\\m\\mm.gguf', mmprojExists: true,
     sizeGb: 13.6, noMmprojOffload: true, extraArgs: '' },
   { id: 'nf1', name: 'Qwen3.8-27B (NInfer)', alias: 'qwen3.8-27b', ctxK: 96, port: 8090,
     vision: true, useMtp: false, engine: 'ninfer',
     ninfer: { maxContext: 98304, kvDtype: 'q4', prefillChunk: 896, draftTokens: 3,
               thinkingBudget: 2048, vision: true, visionMaxTokens: 2048,
               embeddingHost: true, spec: 'mtp', noCudaGraph: true, extraArgs: '' },
-    file: '/root/models/qwen3_8_27b.ninfer', fileExists: true, mmproj: null, mmprojExists: null,
+    file: '/root/models/qwen3_8_27b.ninfer', filePath: '/root/models/qwen3_8_27b.ninfer',
+    fileExists: true, mmproj: null, mmprojExists: null,
     sizeGb: 15.33, noMmprojOffload: false, extraArgs: '' },
 ];
 const STATUS_STUB = { running: true, pids: [1234], ninferPids: [],
@@ -217,7 +220,21 @@ global.window.api = {
   getGpu: async () => ({ name: 'RTX 5080', usedGb: 15.4, totalGb: 15.9, util: 3 }),
   diskUsage: async () => ({ dir: 'C:\\', freeGb: 200, totalGb: 900, usedGb: 24.5 }),
   modelsList: async () => MODELS_STUB.map((m) => ({ ...m })),
-  modelsScan: async () => ({ ok: true, dir: 'C:\\m', files: [] }),
+  modelsScan: async () => ({
+    ok: true, dir: 'C:\\m',
+    files: [
+      // 已在配置里（应被扫描结果隐藏）
+      { file: 'reap.gguf', sizeGb: 13.59, mmproj: false, engine: 'llamacpp',
+        quantization: 'IQ4_XS', meta: { architecture: 'qwen3' } },
+      // 已绑定的投影（应被隐藏）
+      { file: 'mm.gguf', sizeGb: 0.84, mmproj: true, engine: 'llamacpp', meta: null },
+      // 全新、未添加的模型（应显示）
+      { file: 'new-model-Q4_K_M.gguf', sizeGb: 4.2, mmproj: false, engine: 'llamacpp',
+        quantization: 'Q4_K_M', meta: { architecture: 'llama' } },
+      // 全新、未绑定的投影（应显示）
+      { file: 'mmproj-extra-F16.gguf', sizeGb: 0.9, mmproj: true, engine: 'llamacpp', meta: null },
+    ],
+  }),
   modelsArgs: async (id, ctxK) => {
     const m = MODELS_STUB.find((x) => x.id === id);
     const k = Number(ctxK) || (m ? m.ctxK : 32);
@@ -346,16 +363,48 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   ok(/进程/.test($('st-engine-sub').textContent),
      '副标题含进程信息："' + $('st-engine-sub').textContent + '"');
 
-  console.log('\n【D】首页卡片的上下文标注（只写 xxK）');
-  const cardsHtml = $('model-list').innerHTML;
+  console.log('\n【D】首页卡片：上下文只读展示 + 引擎标签');
+  // 卡片是 appendChild 进去的，父容器的 innerHTML 不反映子节点 —— 要看卡片自己的 innerHTML
+  const cards = $('model-list').children;
+  const cardsHtml = cards.map((c) => c.innerHTML).join('');
   ok(!/tokens/.test(cardsHtml), '卡片里不再出现 "tokens" 字样');
-  ok(!/=\s*\d+/.test(cardsHtml.replace(/value="\d+"/g, '')), '不再有 "= xxx" 的换算写法');
-  // syncUnit() 会把初始的 <span class="unit">K</span> 改写成 "<数字>K"
-  const units = $('model-list').querySelectorAll('.unit');
-  ok(units.length === 2, '两张卡片都有单位标注（实际 ' + units.length + '）');
-  ok(units.every((u) => /^\d+K$/.test(u.textContent)),
-     '单位文本形如 "90K"/"96K"：' + units.map((u) => u.textContent).join(', '));
-  ok(units.every((u) => !/token/i.test(u.textContent)), '单位文本不含 token 字样');
+  ok($('model-list').querySelectorAll('input').length === 0,
+     '卡片里已无输入框（上下文不再在首页改）');
+  ok(/上下文 90K/.test(cardsHtml) && /上下文 96K/.test(cardsHtml),
+     '卡片元信息里只读显示 "上下文 90K" / "上下文 96K"');
+  // 引擎标签
+  const lcBadges = $('model-list').querySelectorAll('.badge.lc');
+  const nfBadges = $('model-list').querySelectorAll('.badge.nf');
+  ok(lcBadges.length === 1, 'llama.cpp 模型带一个 llama.cpp 标签（实际 ' + lcBadges.length + '）');
+  ok(nfBadges.length === 1, 'NInfer 模型带一个 NInfer 标签（实际 ' + nfBadges.length + '）');
+  ok(/badge lc[^>]*>llama\.cpp</.test(cardsHtml), 'llama.cpp 标签文案正确');
+  ok(/badge nf[^>]*>NInfer</.test(cardsHtml), 'NInfer 标签文案正确');
+  ok(!/badge (nf|lc)[^>]*>\s*<\/span>\s*<span class="badge (nf|lc)/.test(cardsHtml),
+     '每张卡片只有一个引擎标签');
+
+  console.log('\n【F】参数页：上下文可改且运行中不被锁');
+  railViews[1].dispatchEvent('click');
+  await wait(250);
+  ok(!!$('p-ctx'), '参数页存在上下文输入框');
+  ok($('p-ctx').disabled === false,
+     '模型运行中时上下文输入框仍可编辑（原先被 disabled 锁死）');
+  ok($('p-save').disabled === false, '保存按钮在运行中也可用');
+  ok(String($('p-ctx').value) === '90',
+     '默认选中模型的上下文回填正确（实际 ' + $('p-ctx').value + '）');
+
+  // 真正改一次上下文并保存，验证落到 ctxK 上
+  $('p-ctx').value = '48';
+  $('p-ctx').dispatchEvent('input');
+  await wait(120);
+  ok(/49152/.test($('p-ctx-note').textContent),
+     '换算提示实时更新为 49152 tokens（实际 "' + $('p-ctx-note').textContent + '"）');
+  $('p-save').dispatchEvent('click');
+  await wait(250);
+  ok(lastPatch && lastPatch.id === 'reap', '保存目标是当前模型（实际 ' + (lastPatch && lastPatch.id) + '）');
+  ok(lastPatch && lastPatch.patch.ctxK === 48,
+     '上下文写入顶层 ctxK=48（实际 ' + (lastPatch && lastPatch.patch.ctxK) + '）');
+  ok(lastPatch && !('ninfer' in lastPatch.patch),
+     'llama.cpp 模型不会误写 ninfer 子对象');
 
   console.log('\n【E】参数面板：按引擎切换');
   railViews[1].dispatchEvent('click');
@@ -370,9 +419,12 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   const nfRow = rows.filter((r) => /NInfer/.test(r.innerHTML))[0];
   ok(!!nfRow, '找到 NInfer 那一行');
   if (nfRow) {
-    const btn = nfRow.querySelectorAll('button').filter((b) => b.textContent === '启动参数')[0];
-    ok(!!btn, 'NInfer 行有「启动参数」按钮');
-    btn.dispatchEvent('click');
+    ok(nfRow.querySelectorAll('button').filter((b) => b.textContent === '启动参数').length === 0,
+       '「启动参数」按钮已删除');
+    ok(nfRow.querySelectorAll('button').filter((b) => b.textContent === '编辑').length === 1,
+       '仍保留「编辑」按钮');
+    // 直接点整行来切换右侧参数面板
+    nfRow.dispatchEvent('click');
     await wait(300);
 
     ok(/NInfer/.test($('p-engine-tag').innerHTML), '引擎徽标切到 NInfer');
@@ -383,6 +435,10 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     ok($('p-nf-kvdtype').value === 'q4', 'KV 精度回填 q4（实际 ' + $('p-nf-kvdtype').value + '）');
     ok(String($('p-nf-prefill').value) === '896', '预填充块回填 896（实际 ' + $('p-nf-prefill').value + '）');
     ok($('p-nf-vision').checked === true, '视觉开关回填为开');
+    ok(String($('p-ctx').value) === '96', '上下文回填该模型的 96（实际 ' + $('p-ctx').value + '）');
+    // 选中行应有 selected 高亮
+    const sel = $('manage-list').children.filter((r) => r._classes && r._classes.has('selected'));
+    ok(sel.length === 1, '被选中的行有 selected 高亮（实际 ' + sel.length + ' 行）');
 
     // 改值再保存：必须写进 ninfer 子对象，不能污染顶层
     $('p-nf-prefill').value = '1024';
@@ -399,6 +455,33 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     ok(lastPatch && !('noMmprojOffload' in lastPatch.patch),
        'NInfer 模型不会误写 llama.cpp 的 noMmprojOffload 字段');
   }
+
+  console.log('\n【G】自动扫描：只列没配置过的东西');
+  $('btn-scan').dispatchEvent('click');
+  await wait(350);
+  ok($('scan-box').hidden === false, '扫描结果面板已展开');
+
+  // scan-list 的内容来自 innerHTML 生成的子节点，父节点的 _html 不反映它们
+  // 已配置的 3 个文件：reap.gguf、mm.gguf、以及 WSL 里的 qwen3_8_27b.ninfer
+  const items = $('scan-list').children;
+  const itemText = items.map((c) => c.innerHTML).join(' ');
+  const names = items.map((c) => (c.querySelector('.sname') || {}).textContent || '');
+  ok(!/reap\.gguf/.test(itemText), '已添加的模型 reap.gguf 不在扫描结果里');
+  ok(!/mm\.gguf/.test(itemText), '已绑定的投影 mm.gguf 不在扫描结果里');
+  ok(!/qwen3_8_27b\.ninfer/.test(itemText), '已添加的 NInfer 模型不在扫描结果里');
+  ok(/new-model-Q4_K_M\.gguf/.test(itemText), '未添加的新模型仍在结果里');
+  ok(/mmproj-extra-F16\.gguf/.test(itemText), '未绑定的投影仍在结果里');
+  ok(names.length === 2, '扫描结果只剩 2 项（实际 ' + names.length + '：' + names.join(', ') + '）');
+  ok(/已隐藏 3 个已添加的/.test($('scan-title').textContent),
+     '标题注明隐藏数量（实际 "' + $('scan-title').textContent + '"）');
+  ok(/1 个模型/.test($('scan-title').textContent)
+     && /1 个投影文件/.test($('scan-title').textContent),
+     '计数只统计保留项，不含已隐藏的');
+  // 剩下的项按钮文案：新模型是「添加」，未绑定投影是「绑定」
+  const addBtns = $('scan-list').querySelectorAll('.sadd');
+  ok(addBtns.filter((b) => b.textContent === '添加').length === 1, '新模型按钮为「添加」');
+  ok(addBtns.filter((b) => b.textContent === '绑定').length === 1, '未绑定投影按钮为「绑定」');
+  ok(addBtns.filter((b) => b.textContent === '已添加').length === 0, '不再出现「已添加」这种占位按钮');
 
   console.log('\n' + '='.repeat(50));
   console.log('通过 ' + pass + ' / 失败 ' + fail);

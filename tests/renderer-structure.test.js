@@ -62,7 +62,7 @@ class El {
     while ((m = re.exec(this._html)) !== null) {
       const tag = m[1];
       // 去掉尾部的 "/"（自闭合写法），但 input/img 这类仍要建成节点 ——
-      // renderer 会查询 input[data-ctx] 并给它绑事件
+      // renderer 会查询 input / .unit / .card-foot 这类选择器并绑事件
       const attrs = (m[2] || '').replace(/\/\s*$/, '');
       const child = new El(tag);
       const idm = attrs.match(/\bid="([^"]+)"/);
@@ -293,7 +293,9 @@ const $ = (id) => elById.get(id);
   ok(!!$('st-engine'), '存在 #st-engine 元素');
   ok(!!$('st-engine-sub'), '存在 #st-engine-sub 元素');
 
-  console.log('\n【3】NInfer 参数面板');
+  console.log('\n【3】参数页：上下文 + NInfer 参数');
+  ok(!!$('p-ctx'), '存在上下文输入框（唯一可改上下文的地方）');
+  ok(!!$('p-ctx-note'), '存在上下文换算提示');
   ok(!!$('p-ninfer-group'), '存在 NInfer 参数分组');
   ok(!!$('p-nf-kvdtype') && !!$('p-nf-spec'), '存在 KV / 投机解码下拉');
   ok(!!$('p-nf-prefill') && !!$('p-nf-draft'), '存在预填充块 / 草稿 token');

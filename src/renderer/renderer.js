@@ -64,10 +64,6 @@ function applyLogFilter() {
  * ------------------------------------------------------------------ */
 
 function renderModels() {
-  // 有输入框正在编辑时不要整块重建 —— 重建会销毁输入框，
-  // 用户刚敲进去的值会被 m.ctxK 覆盖回去（"改了又变回去"的现场）
-  if (ctxEditing()) return;
-
   const box = $('model-list');
   box.innerHTML = '';
 
@@ -80,32 +76,26 @@ function renderModels() {
       + (isActive ? ' active' : '')
       + (!m.fileExists ? ' missing' : '');
 
+    // 引擎标签：和「视觉 / MTP」同级的小标，一眼看出走哪条引擎
+    const isNinfer = m.engine === 'ninfer';
     const badges = [];
-    if (m.engine === 'ninfer') badges.push('<span class="badge nf">NInfer</span>');
+    badges.push(isNinfer
+      ? '<span class="badge nf" title="NInfer 引擎（WSL 内运行）">NInfer</span>'
+      : '<span class="badge lc" title="llama.cpp 引擎（Windows 原生）">llama.cpp</span>');
     if (m.vision) badges.push('<span class="badge v">视觉</span>');
     if (m.useMtp) badges.push('<span class="badge mtp">MTP</span>');
     if (isActive) badges.push('<span class="badge run">运行中</span>');
 
-    // 运行中禁用上下文输入 —— 用与 isActive 相同的判断，避免按钮显示「停止」
-    // 但输入框却还能改（外部启动的实例只满足 ports 条件）
-    const ctxLocked = isActive;
-    const ctxTip = ctxLocked
-      ? '模型运行中，需停止后修改'
-      : '单位 K；改完自动保存到配置，下次启动生效，点「启动」则本次立即生效';
-
+    // 上下文不在这张卡片上改（已挪到「启动参数」页），这里只展示只读值
     card.innerHTML = `
       <div class="card-top">
         <span class="card-name">${esc(m.name)}</span>
         ${badges.join('')}
       </div>
       <div class="card-meta">
-        ${m.sizeGb ? m.sizeGb.toFixed(2) + ' GB' : '文件缺失'} · 端口 ${m.port}
+        ${m.sizeGb ? m.sizeGb.toFixed(2) + ' GB' : '文件缺失'} · 端口 ${m.port} · 上下文 ${m.ctxK}K
       </div>
-      <div class="card-foot">
-        <input type="number" min="1" max="512" step="1" value="${m.ctxK}"
-               data-ctx="${m.id}" ${ctxLocked ? 'disabled' : ''} title="${ctxTip}" />
-        <span class="unit">K</span>
-      </div>
+      <div class="card-foot"></div>
     `;
 
     const btn = document.createElement('button');
@@ -118,95 +108,15 @@ function renderModels() {
       btn.disabled = true;
     }
 
+    // 启动用配置里的 ctxK —— 上下文在「启动参数」页改并落盘
     btn.addEventListener('click', () => {
       if (isActive) doStop();
-      else doStart(m.id, card.querySelector(`input[data-ctx="${m.id}"]`).value);
+      else doStart(m.id, m.ctxK);
     });
 
     card.querySelector('.card-foot').appendChild(btn);
-
-    const inp = card.querySelector(`input[data-ctx="${m.id}"]`);
-    const unit = card.querySelector('.unit');
-    const syncUnit = () => {
-      const k = Number(inp.value) || 0;
-      unit.textContent = k + 'K';
-    };
-    inp.addEventListener('input', syncUnit);
-
-    // 改完就落盘。以前这个框只在本次启动生效、不写回配置，卡片每 5 秒重绘
-    // 时又用 m.ctxK 填回去，看起来就像"改不了"。
-    inp.addEventListener('change', () => {
-      // busy 期间禁止被重绘覆盖，避免用户还在编辑时框里的值被刷回旧值
-      inp.dataset.busy = '1';
-      saveCtx(m.id, inp.value, inp);
-    });
-
-    // 正在编辑的框不被重绘覆盖（renderModels 会整块重建卡片 DOM）
-    inp.addEventListener('focus', () => { inp.dataset.busy = '1'; });
-    inp.addEventListener('blur', () => {
-      inp.dataset.busy = '';
-      // 编辑期间重绘被跳过，失焦后补一次，把卡片刷成当前真实状态
-      refresh();
-    });
-
-    syncUnit();
-
     box.appendChild(card);
   });
-}
-
-/**
- * 把「快速启用」卡片里改的上下文写回配置。
- *
- * 这个框既当本次启动的参数（点「启动」时直接读它），也负责落盘，
- * 否则卡片重绘 / 重启应用就变回 models.json 里的旧值。
- *
- * @param {string} id 模型 id
- * @param {string|number} raw 输入框里的原始值
- * @param {HTMLInputElement} inp 输入框本体
- */
-async function saveCtx(id, raw, inp) {
-  const k = Math.round(Number(raw));
-  if (!Number.isFinite(k) || k < 1) {
-    const cur = MODELS.find((x) => x.id === id);
-    if (cur) {
-      inp.value = String(cur.ctxK);
-      inp.dispatchEvent(new Event('input'));
-    }
-    inp.dataset.busy = '';
-    return;
-  }
-
-  // 数值没变就不写盘，避免无意义的重绘
-  if (String(k) === String(raw)) {
-    const cur0 = MODELS.find((x) => x.id === id);
-    if (cur0 && cur0.ctxK === k) {
-      inp.dataset.busy = '';
-      return;
-    }
-  }
-
-  const res = await window.api.modelsUpdate(id, { ctxK: k });
-  if (res.ok) {
-    inp.value = String(k);
-    inp.dispatchEvent(new Event('input'));
-    await refresh();
-    toast(`上下文已保存为 ${k}K，下次启动生效`, 'ok');
-  } else {
-    $('modal-error').textContent = res.error || '保存失败';
-    toast(res.error || '保存失败', 'err');
-    const cur = MODELS.find((x) => x.id === id);
-    if (cur) {
-      inp.value = String(cur.ctxK);
-      inp.dispatchEvent(new Event('input'));
-    }
-  }
-  inp.dataset.busy = '';
-}
-
-/** 是否有上下文输入框正在被编辑 —— 用于避免重绘把用户输入刷掉 */
-function ctxEditing() {
-  return !!document.querySelector('#model-list input[data-ctx][data-busy="1"]');
 }
 
 function renderStatus() {
@@ -532,12 +442,20 @@ function renderManage() {
 
   MANAGED.forEach((m) => {
     const isActive = STATUS.current === m.id;
+    // 是否就是右侧「启动参数」当前正在编辑的那个模型
+    const isSelected = paramsModelId === m.id;
     const row = document.createElement('div');
     row.className = 'mrow'
       + (isActive ? ' active' : '')
+      + (isSelected ? ' selected' : '')
       + (!m.fileExists ? ' missing' : '');
+    // 整行可点：点一下就选中它，右侧参数面板跟着切过去
+    row.title = '点击此卡片，在右侧编辑它的启动参数';
+    row.tabIndex = 0;
 
     const badges = [];
+    if (m.engine === 'ninfer') badges.push('<span class="badge nf">NInfer</span>');
+    else badges.push('<span class="badge lc">llama.cpp</span>');
     if (m.vision) badges.push('<span class="badge v">视觉</span>');
     if (m.useMtp) badges.push('<span class="badge mtp">MTP</span>');
     if (isActive) badges.push('<span class="badge run">运行中</span>');
@@ -566,21 +484,28 @@ function renderManage() {
     const edit = document.createElement('button');
     edit.className = 'mini';
     edit.textContent = '编辑';
-    edit.addEventListener('click', () => openModal(m.id));
+    edit.title = '编辑名称、文件、端口等';
+    // 编辑按钮要吃掉冒泡，否则会连带触发整行的「选中」
+    edit.addEventListener('click', (e) => { e.stopPropagation(); openModal(m.id); });
     acts.appendChild(edit);
-
-    // 直接跳到启动参数页并选中该模型
-    const pbtn = document.createElement('button');
-    pbtn.className = 'mini';
-    pbtn.textContent = '启动参数';
-    pbtn.addEventListener('click', () => {
-      paramsModelId = m.id;
-      switchView('manage');
-    });
-    acts.appendChild(pbtn);
     // 删除统一走顶部「删除模型」按钮，避免误点单个卡片就删几十 GB
 
     row.appendChild(acts);
+
+    // 选中该模型 → 右侧参数面板切换过去
+    const select = () => {
+      if (paramsModelId === m.id) return;
+      paramsModelId = m.id;
+      paramsDirty = false;          // 换模型时丢掉上一个模型的未保存标记
+      paramsSaving = false;
+      renderManage();               // 刷新 selected 高亮
+      loadParams();
+    };
+    row.addEventListener('click', select);
+    row.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(); }
+    });
+
     box.appendChild(row);
   });
 }
@@ -762,27 +687,45 @@ function renderScan(dir) {
   const list = $('scan-list');
   box.hidden = false;
 
-  const mains = SCAN_FILES.filter((f) => !f.mmproj && f.engine !== 'ninfer').length;
-  const projs = SCAN_FILES.filter((f) => f.mmproj).length;
-  const nfs = SCAN_FILES.filter((f) => f.engine === 'ninfer').length;
+  // 扫描结果里只保留「还没配置过的东西」：
+  //   - 已添加的模型不再列出（列表里已经有了，重复显示只会干扰）
+  //   - 已被某个模型绑定的视觉投影也不再列出
+  // 判断依据同时兼容文件名（gguf）与绝对路径（NInfer / 本地 .ninfer）。
+  const isAdded = (f) => MANAGED.some(
+    (m) => m.file === f.file || m.file === f.path || (f.path && m.file === f.path));
+  const isBound = (f) => MANAGED.some(
+    (m) => m.mmproj && (m.mmproj === f.file || m.mmproj === f.path));
+
+  const all = SCAN_FILES;
+  const fresh = all.filter((f) => (f.mmproj ? !isBound(f) : !isAdded(f)));
+  const hiddenCount = all.length - fresh.length;
+
+  const mains = fresh.filter((f) => !f.mmproj && f.engine !== 'ninfer').length;
+  const projs = fresh.filter((f) => f.mmproj).length;
+  const nfs = fresh.filter((f) => f.engine === 'ninfer').length;
 
   const bits = [`${mains} 个模型`];
   if (projs) bits.push(`${projs} 个投影文件`);
   if (nfs) bits.push(`${nfs} 个 NInfer`);
-  $('scan-title').textContent = `扫描结果：${bits.join(' · ')}`;
+  $('scan-title').textContent = `扫描结果：${bits.join(' · ')}`
+    + (hiddenCount ? `（已隐藏 ${hiddenCount} 个已添加的）` : '');
 
   list.innerHTML = '';
 
-  if (!SCAN_FILES.length) {
+  if (!all.length) {
     list.innerHTML = `<div class="empty">${esc(dir || '')}<br>没有找到 .gguf 或 .ninfer 文件</div>`;
     return;
   }
 
-  SCAN_FILES.forEach((f) => {
-    const added = MANAGED.some((m) => m.file === f.file || m.file === f.path);
+  if (!fresh.length) {
+    list.innerHTML = '<div class="empty">扫描到的文件都已经添加过了<br>'
+      + '（已添加的模型和已绑定的投影不会在这里重复显示）</div>';
+    return;
+  }
 
+  fresh.forEach((f) => {
     const item = document.createElement('div');
-    item.className = 'scan-item' + (added ? ' added' : '');
+    item.className = 'scan-item';
 
     const metaBits = [f.sizeGb.toFixed(2) + 'GB'];
     if (f.engine === 'ninfer') {
@@ -803,40 +746,33 @@ function renderScan(dir) {
     add.className = 'sadd';
 
     if (f.mmproj) {
-      // 投影文件不能单独作为模型，提示用户去主模型里绑定
-      const owners = MANAGED.filter((m) => m.mmproj === f.file);
-      add.textContent = owners.length ? '已绑定' : '绑定';
-      add.title = owners.length
-        ? `已绑定到「${owners[0].name}」`
-        : '投影文件需绑定到主模型：点主模型的「编辑」，在「视觉投影」里选择它';
-      if (!owners.length) {
-        add.addEventListener('click', () => {
-          toast('请在主模型的「编辑」里，于「视觉投影」中选择该文件', 'ok');
-        });
-      }
+      // 已绑定的投影在过滤阶段就被去掉了，这里剩下的都是未绑定的
+      add.textContent = '绑定';
+      add.title = '投影文件需绑定到主模型：点主模型的「编辑」，在「视觉投影」里选择它';
+      add.addEventListener('click', () => {
+        toast('请在主模型的「编辑」里，于「视觉投影」中选择该文件', 'ok');
+      });
       item.appendChild(add);
       list.appendChild(item);
       return;
     }
 
-    item.classList.toggle('added', added);
-    add.textContent = added ? '已添加' : '添加';
-    if (!added) {
-      add.addEventListener('click', async () => {
-        add.disabled = true;
-        const preset = scanToModel(f);
-        const res = await window.api.modelsCreate(preset);
-        if (!res.ok) {
-          toast(res.error || '添加失败', 'err');
-          add.disabled = false;
-          return;
-        }
-        toast(`已添加「${preset.name}」`, 'ok');
-        await refreshManage();
-        renderScan(dir);
-        await refresh();
-      });
-    }
+    // 未添加的模型（已添加的已被过滤掉）
+    add.textContent = '添加';
+    add.addEventListener('click', async () => {
+      add.disabled = true;
+      const preset = scanToModel(f);
+      const res = await window.api.modelsCreate(preset);
+      if (!res.ok) {
+        toast(res.error || '添加失败', 'err');
+        add.disabled = false;
+        return;
+      }
+      toast(`已添加「${preset.name}」`, 'ok');
+      await refreshManage();
+      renderScan(dir);
+      await refresh();
+    });
     item.appendChild(add);
     list.appendChild(item);
   });
@@ -1257,12 +1193,16 @@ async function loadParams() {
     $('p-extraargs').value = isNinfer
       ? ((m.ninfer && m.ninfer.extraArgs) || '')
       : (m.extraArgs || '');
+    $('p-ctx').value = m.ctxK;
     if (isNinfer) fillNinferFields(m.ninfer || {});
   } else {
     // 值已经从 store 加载过了，脏标记说明输入框里才是用户的最新意图
     $('p-status').textContent = '有未保存的改动';
     $('p-status').className = 'phint';
   }
+
+  // 上下文在运行中也能改（下次启动生效），所以这个框不随运行状态禁用
+  updateCtxNote(isNinfer);
 
   // llama.cpp 专属的 mmproj 开关在 NInfer 下没有意义，整行隐藏
   $('p-row-nommproj').hidden = isNinfer;
@@ -1271,14 +1211,18 @@ async function loadParams() {
     ? '追加到 ninfer-serve 命令末尾，按空格拆分；含空格的用引号包起来'
     : '本版本未内置的参数都填这里，按空格拆分；含空格的用引号包起来。会插在 --host 之前';
 
-  $('p-nommprojoffload').disabled = running || !hasMmproj;
-  $('p-extraargs').disabled = running;
-  $('p-save').disabled = running;
-  setNinferInputsDisabled(running);
+  // 这些参数一律「下次启动才生效」，所以运行中照样可以改、可以存 ——
+  // 之前整页锁死，导致想改上下文得先停模型，体验上就像"被锁住了"。
+  // 只有 mmproj 开关在「该模型根本没有投影文件」时才需要禁用（改了也没用）。
+  $('p-nommprojoffload').disabled = !hasMmproj;
+  $('p-extraargs').disabled = false;
+  $('p-ctx').disabled = false;
+  $('p-save').disabled = false;
+  setNinferInputsDisabled(false);
 
   if (running) {
-    $('p-status').textContent = '模型运行中，停止后才能改参数';
-    $('p-status').className = 'phint err';
+    $('p-status').textContent = '模型运行中，改动将在下次启动生效';
+    $('p-status').className = 'phint';
   }
   $('p-nommprojoffload-hint').textContent = hasMmproj
     ? '让视觉投影（mmproj）留在 CPU 内存，省约 1 GB 显存；仅多模态模型有效'
@@ -1353,11 +1297,30 @@ async function refreshCmd() {
   $('p-cmd-meta').textContent = bits.join(' · ');
 }
 
-/** 取快速启用卡片上的上下文值（那个框是启动时的真实来源） */
+/**
+ * 更新上下文输入框旁边的换算提示。
+ * NInfer 的上下文和 llama.cpp 一样按 K 存，但换算都是 ×1024。
+ */
+function updateCtxNote(isNinfer) {
+  const el = $('p-ctx-note');
+  if (!el) return;
+  const k = Number($('p-ctx').value) || 0;
+  const engine = isNinfer === undefined
+    ? ((MODELS.find((x) => x.id === paramsModelId) || {}).engine === 'ninfer')
+    : isNinfer;
+  el.textContent = k > 0
+    ? `= ${k * 1024} tokens${engine ? '（NInfer）' : ''}`
+    : '';
+}
+
+/** 取当前参数页里填的上下文（K）；取不到就回退到配置值 */
 function ctxValueOf(id) {
-  const inp = document.querySelector(`#model-list input[data-ctx="${id}"]`);
-  const v = inp ? Number(inp.value) : NaN;
-  if (Number.isFinite(v) && v > 0) return v;
+  const inp = $('p-ctx');
+  // 只有参数页显示的就是这个模型时，输入框里的值才可信
+  if (inp && (!id || id === paramsModelId)) {
+    const v = Number(inp.value);
+    if (Number.isFinite(v) && v > 0) return v;
+  }
   const m = MODELS.find((x) => x.id === id);
   return m ? m.ctxK : undefined;
 }
@@ -1374,9 +1337,20 @@ async function saveParams() {
   const m = MODELS.find((x) => x.id === paramsModelId) || {};
   const isNinfer = m.engine === 'ninfer';
 
+  // 上下文对所有引擎都存顶层 ctxK
+  const ctxK = Math.round(Number($('p-ctx').value));
+  if (!Number.isFinite(ctxK) || ctxK < 1) {
+    paramsSaving = false;
+    $('p-save').disabled = false;
+    $('p-status').textContent = '上下文需为不小于 1 的整数';
+    $('p-status').className = 'phint err';
+    return;
+  }
+
   let patch;
   if (isNinfer) {
     patch = {
+      ctxK,
       ninfer: {
         ...(m.ninfer || {}),
         ...collectNinferFields(),
@@ -1385,6 +1359,7 @@ async function saveParams() {
     };
   } else {
     patch = {
+      ctxK,
       noMmprojOffload: $('p-nommprojoffload').checked,
       extraArgs: $('p-extraargs').value,
     };
@@ -1442,6 +1417,13 @@ $('btn-open-datadir').addEventListener('click', () => {
 $('p-save').addEventListener('click', saveParams);
 $('p-nommprojoffload').addEventListener('change', () => { paramsDirty = true; refreshCmd(); });
 $('p-extraargs').addEventListener('input', () => { paramsDirty = true; refreshCmd(); });
+
+// 上下文：改了就标脏 + 刷新换算提示与命令预览
+$('p-ctx').addEventListener('input', () => {
+  paramsDirty = true;
+  updateCtxNote();
+  refreshCmd();
+});
 
 // NInfer 参数改动同样标脏并刷新命令预览
 ['p-nf-kvdtype', 'p-nf-spec', 'p-nf-prefill', 'p-nf-draft', 'p-nf-thinking',

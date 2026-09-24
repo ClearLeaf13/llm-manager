@@ -40,7 +40,10 @@ const chk = (c, l) => {
 };
 
 console.log('--- package.json（产物内） ---');
-chk(pj.version === '1.3.0', 'version 1.3.0（实际 ' + pj.version + '）');
+// 版本号从源码 package.json 读，避免每次发版都要手改这个断言
+const SRC_PKG = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+chk(pj.version === SRC_PKG.version,
+    'version 与源码一致：' + SRC_PKG.version + '（产物 ' + pj.version + '）');
 chk(pj.name === 'llm-manager',
     'name 仍是 llm-manager —— userData 路径不变，用户配置不丢');
 chk(pj.main === 'src/main.js', 'main 入口正确');
@@ -89,6 +92,18 @@ chk(/function renderEngineCard/.test(rj), 'renderEngineCard');
 chk(/function setSplitTarget/.test(rj), 'setSplitTarget（拖动条修复）');
 chk(/function loadNinferStatus/.test(rj), 'loadNinferStatus');
 chk(/function collectNinferFields/.test(rj), 'collectNinferFields');
+chk(/id="p-ctx"/.test(hj) && /'p-ctx'/.test(rj), '上下文输入框在参数页');
+chk(!/data-ctx/.test(rj), '首页卡片已移除上下文输入框');
+chk(/badge nf/.test(rj) && /badge lc/.test(rj), '首页卡片带引擎标签');
+chk(/function updateCtxNote/.test(rj), 'updateCtxNote（上下文换算提示）');
+chk(!/saveCtx|ctxEditing/.test(rj), '旧的卡片上下文读写逻辑已删除');
+chk(!/'启动参数'/.test(rj), '管理列表的「启动参数」按钮已删除');
+chk(/function isAdded|const isAdded/.test(rj) && /function isBound|const isBound/.test(rj),
+    '扫描结果按「已添加 / 已绑定」过滤');
+chk(/已隐藏/.test(rj), '扫描标题注明隐藏数量');
+chk(/selected/.test(rj) && /function select|const select/.test(rj),
+    '管理列表行支持点击选中');
+chk(/row\.addEventListener\('click', select\)/.test(rj), '整行点击切换参数面板');
 {
   const sv = rj.match(/function switchView[\s\S]{0,900}?\n\}/);
   chk(!!sv && !/'log'/.test(sv[0]), 'switchView 不再有 log 分支');

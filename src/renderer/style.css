@@ -25,6 +25,10 @@
   --err: #d13b3b;
   --err-soft: rgba(209, 59, 59, .12);
 
+  /* NInfer 引擎标签用的紫色（与主题蓝/绿/黄区分） */
+  --nf: #6d4aff;
+  --nf-soft: rgba(109, 74, 255, .10);
+
   --radius: 10px;
   --radius-lg: 14px;
   --tb-h: 38px;
@@ -55,6 +59,9 @@
     --warn-soft: rgba(224, 169, 74, .15);
     --err: #ff6b6b;
     --err-soft: rgba(255, 107, 107, .14);
+
+    --nf: #9b83ff;
+    --nf-soft: rgba(155, 131, 255, .16);
   }
 }
 
@@ -427,6 +434,9 @@ body.resizing * { user-select: none !important; }
 .badge.v { background: var(--accent-soft); color: var(--accent); }
 .badge.mtp { background: var(--warn-soft); color: var(--warn); }
 .badge.run { background: var(--ok-soft); color: var(--ok); }
+/* 引擎标签：llama.cpp 用中性灰、NInfer 用紫色，和视觉/MTP 区分开 */
+.badge.lc { background: var(--bg-sunken); color: var(--text-dim); border: 1px solid var(--border); }
+.badge.nf { background: var(--nf-soft); color: var(--nf); border: 1px solid var(--nf-soft); }
 
 .card-meta { font-size: 11px; color: var(--text-faint); font-family: var(--mono); margin-bottom: 9px; }
 
@@ -609,6 +619,26 @@ details.plog[open] > summary.pgroup-title { margin-bottom: 10px; }
 
 .prow-actions { display: flex; align-items: center; gap: 10px; }
 .prow-actions .mini { margin-left: 0; }
+
+/* 内联数字输入（上下文 / NInfer 数值参数） */
+.pinput { display: flex; align-items: center; gap: 7px; }
+.pinput input[type="number"] {
+  width: 96px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.pinput input[type="number"]:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.pinput .unit { font-size: 12px; color: var(--text-dim); }
+.pinput-note { font-size: 11px; color: var(--text-faint); font-family: var(--mono); }
 
 .phint { font-size: 11px; color: var(--text-faint); line-height: 1.55; margin-top: 5px; }
 .phint.ok { color: var(--ok); }
@@ -906,10 +936,27 @@ input.switch:checked::after { transform: translateX(16px); }
   border-radius: var(--radius);
   background: var(--bg-elev);
   padding: 10px 11px;
-  transition: border-color .15s ease;
+  cursor: pointer;                 /* 整行可点：选中它 → 右侧编辑参数 */
+  transition: border-color .15s ease, background .15s ease, box-shadow .15s ease;
 }
 .mrow:hover { border-color: var(--border-strong); }
-.mrow.active { border-color: var(--accent); background: var(--accent-soft); }
+.mrow:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+/* 运行中（绿）+ 当前在右侧编辑的（蓝）可能同时成立，用左侧色条区分选中态 */
+.mrow.active { border-color: var(--ok); background: var(--ok-soft); }
+.mrow.selected { border-color: var(--accent); }
+.mrow.selected::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 10px; bottom: 10px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent);
+}
+.mrow.selected { position: relative; }
 .mrow.missing { opacity: .6; }
 
 .mrow-top {
