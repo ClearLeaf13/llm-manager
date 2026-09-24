@@ -63,6 +63,23 @@ function applyLogFilter() {
  * 渲染
  * ------------------------------------------------------------------ */
 
+/**
+ * 这个模型是否有视觉能力。
+ *
+ * 两个引擎的判定源不同：
+ *   llama.cpp —— 看 model.vision（是否挂了 mmproj）
+ *   NInfer    —— 看 ninfer.vision（视觉编码器内建在 .ninfer 里，靠 --vision 开关）
+ * 缺省都按「有」处理会误报，所以这里按引擎分别取，并对 NInfer 做 undefined→true。
+ */
+function hasVision(m) {
+  if (!m) return false;
+  if (m.engine === 'ninfer') {
+    const nf = m.ninfer;
+    return !nf || nf.vision !== false;
+  }
+  return !!m.vision;
+}
+
 function renderModels() {
   const box = $('model-list');
   box.innerHTML = '';
@@ -82,7 +99,7 @@ function renderModels() {
     badges.push(isNinfer
       ? '<span class="badge nf" title="NInfer 引擎（WSL 内运行）">NInfer</span>'
       : '<span class="badge lc" title="llama.cpp 引擎（Windows 原生）">llama.cpp</span>');
-    if (m.vision) badges.push('<span class="badge v">视觉</span>');
+    if (hasVision(m)) badges.push('<span class="badge v">视觉</span>');
     if (m.useMtp) badges.push('<span class="badge mtp">MTP</span>');
     if (isActive) badges.push('<span class="badge run">运行中</span>');
 
@@ -141,17 +158,19 @@ function renderStatus() {
       + (loading ? 'warn' : running ? 'ok' : 'idle');
   }
 
-  // PID
-  const pids = STATUS.pids && STATUS.pids.length ? STATUS.pids.join(', ') : '—';
+  // PID：两个引擎的进程名不同，别一律写 llama-server
+  const nfPids = STATUS.ninferPids || [];
+  const isNinferRun = STATUS.engine === 'ninfer' || nfPids.length > 0;
+  const pids = (isNinferRun ? nfPids : (STATUS.pids || [])).join(', ') || '—';
   $('st-pid').textContent = pids;
-  $('st-pid-sub').textContent = 'llama-server PID ' + pids;
+  $('st-pid-sub').textContent = (isNinferRun ? 'ninfer-serve PID ' : 'llama-server PID ') + pids;
 
   // 当前模型
   const cur = MODELS.find((m) => m.id === STATUS.current);
   let modelName = cur ? cur.alias : (running ? '未知 (外部启动)' : '—');
   let sub = '';
   if (cur) {
-    sub = `端口 ${cur.port}${cur.vision ? ' · 多模态' : ''}${cur.useMtp ? ' · MTP' : ''}`;
+    sub = `端口 ${cur.port}${hasVision(cur) ? ' · 多模态' : ''}${cur.useMtp ? ' · MTP' : ''}`;
   } else if (running) {
     const open = MODELS.filter((m) => STATUS.ports[m.port]);
     if (open.length) {
@@ -456,7 +475,7 @@ function renderManage() {
     const badges = [];
     if (m.engine === 'ninfer') badges.push('<span class="badge nf">NInfer</span>');
     else badges.push('<span class="badge lc">llama.cpp</span>');
-    if (m.vision) badges.push('<span class="badge v">视觉</span>');
+    if (hasVision(m)) badges.push('<span class="badge v">视觉</span>');
     if (m.useMtp) badges.push('<span class="badge mtp">MTP</span>');
     if (isActive) badges.push('<span class="badge run">运行中</span>');
     if (!m.fileExists) badges.push('<span class="badge off">文件缺失</span>');
@@ -920,7 +939,10 @@ async function openModal(id) {
     $('f-alias').value = m.alias;
     $('f-port').value = m.port;
     $('f-ctx').value = m.ctxK;
-    $('f-vision').checked = !!m.vision;
+    // NInfer 的视觉来自 ninfer.vision（内建编码器），不是顶层 vision
+    $('f-vision').checked = engine === 'ninfer'
+      ? (m.ninfer ? m.ninfer.vision !== false : true)
+      : !!m.vision;
     $('f-mtp').checked = !!m.useMtp;
     $('f-nommprojoffload').checked = !!m.noMmprojOffload;
     $('f-file-text').value = engine === 'ninfer' ? (m.file || '') : '';
@@ -974,10 +996,12 @@ async function saveModal() {
   if (!Number.isFinite(port)) { err.textContent = '端口无效'; $('f-port').focus(); return; }
 
   const payload = { name, alias, file, mmproj, port, ctxK, vision, useMtp, noMmprojOffload, engine };
-  // 切到 NInfer 时补一份默认参数，否则参数面板没有可编辑的值
+  // NInfer：视觉存在 ninfer 子对象里（内建编码器，无独立 mmproj），
+  // 顶层 vision 由主进程按引擎语义解读，这里一并写上以保持两者一致。
   if (engine === 'ninfer') {
     const cur = editingId ? MANAGED.find((x) => x.id === editingId) : null;
-    payload.ninfer = (cur && cur.ninfer) || undefined;
+    payload.ninfer = { ...((cur && cur.ninfer) || {}), vision };
+    payload.vision = vision;
   }
 
   const res = editingId
@@ -1349,13 +1373,16 @@ async function saveParams() {
 
   let patch;
   if (isNinfer) {
+    const nf = {
+      ...(m.ninfer || {}),
+      ...collectNinferFields(),
+      extraArgs: $('p-extraargs').value,
+    };
     patch = {
       ctxK,
-      ninfer: {
-        ...(m.ninfer || {}),
-        ...collectNinferFields(),
-        extraArgs: $('p-extraargs').value,
-      },
+      ninfer: nf,
+      // 顶层 vision 与 ninfer.vision 保持同步，避免两处显示不一致
+      vision: nf.vision !== false,
     };
   } else {
     patch = {

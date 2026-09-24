@@ -104,6 +104,11 @@ chk(/已隐藏/.test(rj), '扫描标题注明隐藏数量');
 chk(/selected/.test(rj) && /function select|const select/.test(rj),
     '管理列表行支持点击选中');
 chk(/row\.addEventListener\('click', select\)/.test(rj), '整行点击切换参数面板');
+chk(/function hasVision/.test(rj), 'hasVision 按引擎判定视觉能力');
+chk(/ninferVisionOf/.test(mj), 'main.js 按 ninfer.vision 报视觉状态');
+chk(!/vision: false, engine: 'ninfer'/.test(mj), '不再把 NInfer 的 vision 写死为 false');
+chk(/out\.vision = out\.ninfer\.vision/.test(sj), 'store 强制同步两处 vision 字段');
+chk(/ninfer-serve PID/.test(rj), 'PID 行按引擎显示进程名');
 {
   const sv = rj.match(/function switchView[\s\S]{0,900}?\n\}/);
   chk(!!sv && !/'log'/.test(sv[0]), 'switchView 不再有 log 分支');

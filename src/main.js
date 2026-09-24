@@ -657,12 +657,25 @@ async function startNinferModel(model, ctxK) {
   }
 
   const realId = realIdEarly || await fetchModelId(model.port);
+  const visionOn = ninferVisionOf(model);
   pushLog('[OK] NInfer 已就绪', 'sys');
   pushLog(`[API] http://127.0.0.1:${model.port}/v1`, 'sys');
-  if (realId) pushLog(`[模型 id] ${realId}`, 'sys');
+  if (realId) pushLog(`[模型 id] ${realId}${visionOn ? ' (多模态)' : ''}`, 'sys');
 
   broadcastStatus();
-  return { ok: true, pid, port: model.port, modelId: realId, vision: false, engine: 'ninfer' };
+  return { ok: true, pid, port: model.port, modelId: realId, vision: visionOn, engine: 'ninfer' };
+}
+
+/**
+ * NInfer 模型这次启动有没有开视觉。
+ *
+ * 与 llama.cpp 不同：NInfer 的视觉编码器**内建在同一个 .ninfer 文件里**
+ * （没有独立的 mmproj），靠 --vision 开关启用，对应 ninfer.vision。
+ * 该字段缺省视为开启，与 NINFER_PARAM_DEFAULTS / sanitizeNinfer 保持一致。
+ */
+function ninferVisionOf(model) {
+  const nf = model && model.ninfer;
+  return !nf || nf.vision !== false;
 }
 
 /**

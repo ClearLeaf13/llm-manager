@@ -90,6 +90,39 @@ ok(!r3.ok, '运行中改端口仍被正确拦截（预期行为）');
 const r4 = modelsUpdate('nf1', { port: 8095 }, true);
 ok(r4.ok, '运行中提交未变的端口不被误拦（值比较而非键存在）');
 
+console.log('\n【6】视觉能力：NInfer 以 ninfer.vision 为唯一真相');
+// NInfer 的视觉编码器内建在 .ninfer 里（没有独立 mmproj），
+// 靠 --vision 开关。历史配置里顶层 vision 可能与它不一致，
+// 那会让界面漏显示「视觉」标签、启动日志也不打「(多模态)」。
+const inconsistent = store.update('nf1', { vision: false });
+ok(inconsistent.ok, '写入不一致的顶层 vision 未被拒绝');
+const healed = store.find('nf1');
+ok(healed.ninfer.vision === true, 'ninfer.vision 保持 true');
+ok(healed.vision === true,
+   '顶层 vision 被同步为 true（实际 ' + healed.vision + '）—— 修掉两处不一致');
+
+// 真关掉视觉时，两处都应为 false
+store.update('nf1', { ninfer: { ...store.find('nf1').ninfer, vision: false } });
+const off = store.find('nf1');
+ok(off.ninfer.vision === false && off.vision === false,
+   '关闭视觉后两处都是 false（ninfer=' + off.ninfer.vision + ', top=' + off.vision + '）');
+
+// 启动参数确实不再带 --vision
+const offArgs = ninfer.buildArgs(models.resolveModels('C:\\m', [off])[0], 48);
+ok(!offArgs.includes('--vision'), '关闭后启动命令不含 --vision');
+
+// 重新打开
+store.update('nf1', { ninfer: { ...store.find('nf1').ninfer, vision: true } });
+const onArgs = ninfer.buildArgs(models.resolveModels('C:\\m', [store.find('nf1')])[0], 48);
+ok(onArgs.includes('--vision'), '开启后启动命令含 --vision');
+ok(onArgs.includes('--vision-max-tokens'), '并带 --vision-max-tokens');
+
+// llama.cpp 不受这套同步影响
+const lc = store.create({ id: 'lc1', name: 'LC', alias: 'LC', file: 'x.gguf', port: 8096, ctxK: 32, vision: true });
+ok(lc.ok && store.find('lc1').vision === true, 'llama.cpp 模型的 vision 字段照常');
+ok(!Object.prototype.hasOwnProperty.call(store.find('lc1'), 'ninfer'),
+   'llama.cpp 模型不生成 ninfer 子对象');
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log('\n' + '='.repeat(46));
 console.log('通过 ' + pass + ' / 失败 ' + fail);

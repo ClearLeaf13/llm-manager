@@ -136,6 +136,12 @@ function sanitize(input, { keepId = null } = {}) {
   // NInfer 专属参数：只在 ninfer 引擎下保留，llama.cpp 模型不带这坨
   if (out.engine === 'ninfer') {
     out.ninfer = sanitizeNinfer(out.ninfer);
+    // 视觉能力对 NInfer 只有一个真相来源：ninfer.vision
+    // （编码器内建在 .ninfer 文件里，没有独立的 mmproj）。
+    // 顶层 vision 仅作展示用的镜像，这里强制同步，
+    // 否则历史配置里两处可能一个 true 一个 false，界面就会显示错。
+    out.ninfer.vision = out.ninfer.vision !== false;
+    out.vision = out.ninfer.vision;
   } else {
     delete out.ninfer;
   }
