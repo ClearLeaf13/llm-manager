@@ -16,10 +16,17 @@ const { MODELS } = require('./models');
 
 const SCHEMA_VERSION = 1;
 
+/** 支持的推理引擎 */
+const ENGINES = ['llamacpp', 'ninfer'];
+
 /** 允许写入的字段白名单，防止前端塞入任意键 */
 const FIELDS = [
   'id', 'name', 'alias', 'file', 'mmproj',
   'ctxK', 'useMtp', 'port', 'vision',
+  // 启动参数：mmproj 不卸载到 GPU（省显存）；补充参数（本版本未内置的 flag 走这里）
+  'noMmprojOffload', 'extraArgs',
+  // 引擎与 NInfer 专属参数
+  'engine', 'ninfer',
 ];
 
 let storeFile = null;
@@ -43,6 +50,11 @@ function seed() {
     useMtp: !!m.useMtp,
     port: m.port,
     vision: !!m.vision,
+    // 启动参数（预置模型默认关掉 mmproj 卸载、无补充参数）
+    noMmprojOffload: !!m.noMmprojOffload,
+    extraArgs: m.extraArgs || '',
+    engine: m.engine || 'llamacpp',
+    ninfer: m.ninfer ? { ...m.ninfer } : undefined,
   }));
 }
 
@@ -51,7 +63,11 @@ function load() {
     const raw = fs.readFileSync(storeFile, 'utf8');
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed.models)) {
-      cache = parsed.models;
+      // 落盘的数据也要过一遍 sanitize：老配置缺新字段时补默认值，
+      // 类型写坏时也在这里被纠正（否则 undefined 会一路传到启动参数里）
+      cache = parsed.models
+        .filter((m) => m && typeof m === 'object' && m.id)
+        .map((m) => sanitize(m, { keepId: m.id }));
       return cache;
     }
     throw new Error('models 字段不是数组');
@@ -110,8 +126,45 @@ function sanitize(input, { keepId = null } = {}) {
   out.port = Number(out.port) > 0 ? Math.round(Number(out.port)) : 8080;
   out.useMtp = !!out.useMtp;
   out.vision = !!out.vision;
+  // 启动参数：缺省即关闭/空串，保证老配置文件读进来也有值
+  out.noMmprojOffload = !!out.noMmprojOffload;
+  out.extraArgs = typeof out.extraArgs === 'string' ? out.extraArgs.trim().slice(0, 2000) : '';
+
+  // 引擎：老配置没有这个字段，一律按 llama.cpp 处理（向后兼容）
+  out.engine = ENGINES.includes(out.engine) ? out.engine : 'llamacpp';
+
+  // NInfer 专属参数：只在 ninfer 引擎下保留，llama.cpp 模型不带这坨
+  if (out.engine === 'ninfer') {
+    out.ninfer = sanitizeNinfer(out.ninfer);
+  } else {
+    delete out.ninfer;
+  }
 
   return out;
+}
+
+/** NInfer 参数归一：类型纠正 + 越界收敛 + 枚举校验 */
+function sanitizeNinfer(input) {
+  const src = (input && typeof input === 'object') ? input : {};
+  const n = (v, d, lo, hi) => {
+    const x = Number(v);
+    if (!Number.isFinite(x)) return d;
+    return Math.max(lo, Math.min(hi, Math.round(x)));
+  };
+
+  return {
+    maxContext: n(src.maxContext, 32768, 1024, 1048576),
+    kvDtype: ['bf16', 'int8', 'q4'].includes(src.kvDtype) ? src.kvDtype : 'q4',
+    prefillChunk: n(src.prefillChunk, 512, 64, 8192),
+    draftTokens: n(src.draftTokens, 3, 1, 16),
+    thinkingBudget: n(src.thinkingBudget, 2048, 0, 131072),
+    vision: src.vision === undefined ? true : !!src.vision,
+    visionMaxTokens: n(src.visionMaxTokens, 2048, 0, 32768),
+    embeddingHost: src.embeddingHost === undefined ? true : !!src.embeddingHost,
+    spec: ['mtp', 'dflash', 'dflash2', ''].includes(src.spec) ? src.spec : 'mtp',
+    noCudaGraph: src.noCudaGraph === undefined ? true : !!src.noCudaGraph,
+    extraArgs: typeof src.extraArgs === 'string' ? src.extraArgs.trim().slice(0, 2000) : '',
+  };
 }
 
 /** 生成不会与现有模型冲突的 id */
@@ -209,5 +262,5 @@ function resetToSeed() {
 
 module.exports = {
   init, all, find, create, update, remove,
-  genId, nextPort, resetToSeed, FIELDS,
+  genId, nextPort, resetToSeed, sanitize, sanitizeNinfer, FIELDS, ENGINES,
 };

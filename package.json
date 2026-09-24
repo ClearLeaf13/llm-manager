@@ -1,11 +1,13 @@
 {
   "name": "llm-manager",
-  "version": "1.2.2",
-  "description": "llama.cpp 管理器 — 模型切换与实时日志",
+  "version": "1.3.0",
+  "description": "本地 LLM 聚合管理 — 统一管理 llama.cpp 与 NInfer 推理引擎",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --win --x64"
+    "dist": "electron-builder --win --x64",
+    "test": "node tests/renderer-structure.test.js && node tests/renderer-behavior.test.js",
+    "test:artifact": "node tests/verify-artifact.js"
   },
   "author": "",
   "license": "MIT",
@@ -15,7 +17,7 @@
   },
   "build": {
     "appId": "local.llm.manager",
-    "productName": "llama.cpp管理器",
+    "productName": "本地LLM聚合管理",
     "files": [
       "src/**/*",
       "package.json"
@@ -27,7 +29,7 @@
       "signAndEditExecutable": false
     },
     "portable": {
-      "artifactName": "llama.cpp管理器.exe"
+      "artifactName": "LLM-Manager-v${version}.exe"
     }
   }
 }

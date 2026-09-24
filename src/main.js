@@ -13,8 +13,12 @@ const store = require('./store');
 const scanner = require('./scanner');
 const trash = require('./trash');
 const apiServer = require('./api-server');
+const ninfer = require('./ninfer');
 
-/** 开机自启在注册表 Run 项里的名称 */
+/** 应用的显示名（窗口标题 / 托盘 / 气球通知） */
+const APP_NAME = '本地 LLM 聚合管理';
+
+/** 开机自启在注册表 Run 项里的名称（沿用旧键名，升级后不会重复注册） */
 const AUTOSTART_KEY = 'llama.cpp-manager';
 
 /** 当前生效的模型目录（设置可覆盖；否则自动探测） */
@@ -43,6 +47,12 @@ function modelWithPath(id) {
 
 const PROC_NAME = 'llama-server';
 
+/** NInfer 在 WSL 里的进程名（用于 ps 匹配） */
+const NINFER_PROC = 'ninfer-serve';
+
+/** 当前运行的引擎：'llamacpp' | 'ninfer' | null */
+let runningEngine = null;
+
 /** 默认设置；实际值持久化在 userData/settings.json */
 const DEFAULT_SETTINGS = {
   theme: 'system',        // system | light | dark
@@ -55,6 +65,12 @@ const DEFAULT_SETTINGS = {
   serverExe: SERVER_EXE,  // llama-server 路径
   modelsDir: MODELS_DIR,  // 模型目录
   closeToTray: true,      // 点关闭时隐藏到托盘而非退出
+  // --- NInfer（跑在 WSL 里的第二引擎） ---
+  ninferDistro: ninfer.NINFER_DEFAULTS.distro,
+  ninferServe: ninfer.NINFER_DEFAULTS.servePath,
+  ninferCli: ninfer.NINFER_DEFAULTS.cliPath,
+  ninferModelsDir: ninfer.NINFER_DEFAULTS.modelsDir,
+  ninferAutoScan: true,   // 扫描时一并扫 WSL 里的 .ninfer
 };
 
 let settings = { ...DEFAULT_SETTINGS };
@@ -214,19 +230,135 @@ function findLlamaProcesses() {
   });
 }
 
+/* ------------------------------------------------------------------ *
+ * NInfer 进程（跑在 WSL 里）
+ * ------------------------------------------------------------------ */
+
+/** NInfer 运行时配置：从 settings 取值，缺了就用内置默认 */
+function ninferConfig() {
+  return {
+    distro: settings.ninferDistro || ninfer.NINFER_DEFAULTS.distro,
+    servePath: settings.ninferServe || ninfer.NINFER_DEFAULTS.servePath,
+    cliPath: settings.ninferCli || ninfer.NINFER_DEFAULTS.cliPath,
+    modelsDir: settings.ninferModelsDir || ninfer.NINFER_DEFAULTS.modelsDir,
+    port: ninfer.NINFER_DEFAULTS.port,
+  };
+}
+
+/**
+ * 列出 WSL 里正在跑的 ninfer-serve 进程。
+ * 用 `[n]infer-serve` 这种写法避免 grep 匹配到自己的命令行。
+ */
+async function findNinferProcesses() {
+  const cfg = ninferConfig();
+  const r = await ninfer.runBash(cfg.distro,
+    `ps -eo pid,args | grep '[n]infer-serve' | awk '{print $1}'`,
+    { timeout: 10000 });
+  if (!r.ok) return [];
+  return String(r.stdout).split(/\r?\n/)
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isFinite(n) && n > 0);
+}
+
+/**
+ * 杀掉 WSL 里的 ninfer-serve。
+ *
+ * 注意：只 kill Windows 侧的 wsl.exe 宿主是不够的 —— Linux 里的
+ * ninfer-serve 会变成孤儿进程继续占着显存和端口。所以这里直接在
+ * WSL 内按进程名 kill，并轮询确认真的没了。
+ *
+ * @returns {Promise<{ok:boolean, killed:number, remaining:number}>}
+ */
+async function killNinferProcesses() {
+  const cfg = ninferConfig();
+  const script = [
+    "pids=$(ps -eo pid,args | grep '[n]infer-serve' | awk '{print $1}')",
+    'n=0',
+    'for p in $pids; do kill -9 "$p" 2>/dev/null && n=$((n+1)); done',
+    'sleep 1',
+    // 再确认一次，给内核一点回收时间
+    "left=$(ps -eo pid,args | grep -c '[n]infer-serve' || true)",
+    'echo "killed=$n remaining=$left"',
+  ].join('; ');
+
+  const r = await ninfer.runBash(cfg.distro, script, { timeout: 20000 });
+  const out = String(r.stdout || '');
+  const k = Number((out.match(/killed=(\d+)/) || [])[1] || 0);
+  const rem = Number((out.match(/remaining=(\d+)/) || [])[1] || 0);
+  return { ok: r.ok, killed: k, remaining: rem };
+}
+
+/** 探测 NInfer 引擎当前状态（WSL 是否可用、进程、端口） */
+async function probeNinfer() {
+  const cfg = ninferConfig();
+  const distros = await ninfer.listDistros();
+  const found = distros.find((d) => d.name === cfg.distro);
+  if (!found) {
+    return { available: false, distro: cfg.distro, distroState: null, pids: [], error: `未找到 WSL 发行版 ${cfg.distro}` };
+  }
+  if (found.state !== 'running') {
+    // 发行版没起来就不用再问了，起一次 WSL 要好几秒
+    return { available: true, distro: cfg.distro, distroState: found.state, pids: [], error: null };
+  }
+  const pids = await findNinferProcesses();
+  return { available: true, distro: cfg.distro, distroState: found.state, pids, error: null };
+}
+
 async function probeStatus() {
-  const pids = await findLlamaProcesses();
+  const llamaPids = await findLlamaProcesses();
   const ports = {};
   for (const m of store.all()) {
     ports[m.port] = await isPortOpen(m.port);
   }
+
+  // NInfer 侧只在确实需要时才问 WSL（冷启动一次代价不小）
+  const nf = await probeNinfer();
+  const runningNinfer = nf.pids.length > 0;
+
   return {
-    running: pids.length > 0,
-    pids,
+    running: llamaPids.length > 0 || runningNinfer,
+    pids: llamaPids,
+    ninferPids: nf.pids,
+    ninfer: nf,
+    // 引擎归属：以实际在跑的进程为准，跑着 NInfer 就显示 ninfer
+    engine: runningNinfer ? 'ninfer' : (llamaPids.length > 0 ? 'llamacpp' : runningEngine),
     ports,
     current: currentModel ? currentModel.id : null,
     starting: startingModel !== null,
   };
+}
+
+/**
+ * 判断服务是否「真的可用」。
+ *
+ * 只探测端口会误判：NInfer 在权重加载到 100% 之后还要跑 prewarm，
+ * 端口早早就 accept 了，但 /v1/models 还没响应。所以这里以
+ * 「HTTP 能返回 JSON」为准，端口只是前置条件。
+ *
+ * @returns {Promise<{ready:boolean, modelId:string|null}>}
+ */
+function probeReady(port) {
+  return new Promise((resolve) => {
+    const req = http.get(
+      { host: '127.0.0.1', port, path: '/v1/models', timeout: 3000 },
+      (res) => {
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (c) => { body += c; });
+        res.on('end', () => {
+          try {
+            const j = JSON.parse(body);
+            const id = j && j.data && j.data[0] && (j.data[0].id || j.data[0].name);
+            // 能解析出 JSON 就算就绪（id 可能为空，但服务已经在应答）
+            resolve({ ready: true, modelId: id || null });
+          } catch (_) {
+            resolve({ ready: false, modelId: null });
+          }
+        });
+      });
+    req.on('timeout', () => { req.destroy(); resolve({ ready: false, modelId: null }); });
+    req.on('error', () => resolve({ ready: false, modelId: null }));
+  });
 }
 
 /** 查询 /v1/models 拿服务端真实模型 id */
@@ -265,10 +397,21 @@ function killLlamaProcesses() {
   });
 }
 
+/**
+ * 启动一个模型。按 engine 分派到 llama.cpp 或 NInfer 两条路径。
+ *
+ * @param {string} modelId
+ * @param {number} [ctxK] 界面上临时指定的上下文（K）
+ */
 async function startModel(modelId, ctxK) {
   const model = modelWithPath(modelId);
   if (!model) return { ok: false, error: `无效模型: ${modelId}` };
 
+  if (model.engine === 'ninfer') return startNinferModel(model, ctxK);
+  return startLlamaModel(model, ctxK);
+}
+
+async function startLlamaModel(model, ctxK) {
   // 前置校验：文件是否存在（路径可在设置里覆盖）
   const serverExe = settings.serverExe || SERVER_EXE;
   if (!fs.existsSync(serverExe)) {
@@ -294,6 +437,11 @@ async function startModel(modelId, ctxK) {
     pushLog(`[提示] ${msg}`, 'err');
     return { ok: false, error: msg };
   }
+  if ((await findNinferProcesses()).length > 0) {
+    const msg = 'NInfer 服务正在运行，请先停止再启动 llama.cpp 模型';
+    pushLog(`[提示] ${msg}`, 'err');
+    return { ok: false, error: msg };
+  }
 
   // 输入框里的数字单位是 K，需要 ×1024 换成 token 数再传给 -c
   // （与原管理器 "启动 {1} ({2}K)" 的行为一致）
@@ -305,10 +453,12 @@ async function startModel(modelId, ctxK) {
 
   clearLogs();
   pushLog(`[启动] ${model.name}  —  ${ctxKNum}K 上下文 (${ctxTokens} tokens)`, 'sys');
-  pushLog(`[命令] ${serverExe} ${args.join(' ')}`, 'sys');
+  pushLog(`[引擎] llama.cpp`, 'sys');
+  pushLog(`[命令] ${formatCommand(serverExe, args)}`, 'sys');
 
   startingModel = model.id;
   currentModel = model;
+  runningEngine = 'llamacpp';
 
   try {
     child = spawn(serverExe, args, {
@@ -318,6 +468,7 @@ async function startModel(modelId, ctxK) {
     });
   } catch (e) {
     startingModel = null;
+    runningEngine = null;
     const msg = `启动失败: ${e.message}`;
     pushLog(`[错误] ${msg}`, 'err');
     return { ok: false, error: msg };
@@ -336,6 +487,7 @@ async function startModel(modelId, ctxK) {
     child = null;
     currentModel = null;
     startingModel = null;
+    runningEngine = null;
     broadcastStatus();
   });
 
@@ -345,12 +497,16 @@ async function startModel(modelId, ctxK) {
 
   broadcastStatus();
 
-  // 轮询就绪
+  // 轮询就绪：端口开了还不够，要能真的应答 /v1/models
   const deadline = Date.now() + (Number(settings.readyTimeoutSec) || 180) * 1000;
   let ready = false;
+  let realIdEarly = null;
   while (Date.now() < deadline) {
     if (!child) break; // 进程已退出，放弃等待
-    if (await isPortOpen(model.port)) { ready = true; break; }
+    if (await isPortOpen(model.port)) {
+      const pr = await probeReady(model.port);
+      if (pr.ready) { ready = true; realIdEarly = pr.modelId; break; }
+    }
     await new Promise((r) => setTimeout(r, 1000));
   }
 
@@ -367,39 +523,215 @@ async function startModel(modelId, ctxK) {
     return { ok: false, error: '进程在就绪前退出，请查看日志', pid };
   }
 
-  const realId = await fetchModelId(model.port);
+  const realId = realIdEarly || await fetchModelId(model.port);
   pushLog('[OK] llama-server 已就绪', 'sys');
   pushLog(`[API] http://127.0.0.1:${model.port}/v1`, 'sys');
   if (realId) pushLog(`[模型 id] ${realId}${model.vision ? ' (多模态)' : ''}`, 'sys');
 
   broadcastStatus();
-  return { ok: true, pid, port: model.port, modelId: realId, vision: model.vision };
+  return { ok: true, pid, port: model.port, modelId: realId, vision: model.vision, engine: 'llamacpp' };
+}
+
+/**
+ * 启动 NInfer 模型。
+ *
+ * 与 llama.cpp 路径的差别：
+ *   - 进程在 WSL 里，用 wsl.exe -d <distro> -u root -- <serve> 拉起
+ *   - 输出走 wsl 的 stdio，同样是流式日志
+ *   - 就绪探测看 Windows 侧端口（WSL2 默认把端口映射到 localhost）
+ */
+async function startNinferModel(model, ctxK) {
+  const cfg = ninferConfig();
+
+  // 1. WSL 与运行时是否就绪
+  const rt = await ninfer.probeRuntime(cfg.distro, cfg);
+  if (!rt.ok) {
+    const msg = `无法访问 WSL 发行版 ${cfg.distro}：${rt.error || '未知原因'}`;
+    pushLog(`[错误] ${msg}`, 'err');
+    return { ok: false, error: msg };
+  }
+  if (!rt.hasServe) {
+    const msg = `找不到 NInfer 可执行文件：${cfg.servePath}`;
+    pushLog(`[错误] ${msg}`, 'err');
+    return { ok: false, error: msg };
+  }
+
+  // 2. 模型文件在 WSL 内是否存在（Windows 侧用 UNC 路径去 stat）
+  if (!ninferModelExists(model.filePath)) {
+    const msg = `找不到 NInfer 模型文件：${model.filePath}`;
+    pushLog(`[错误] ${msg}`, 'err');
+    return { ok: false, error: msg };
+  }
+
+  // 3. 一次只能跑一个
+  const existingLlama = await findLlamaProcesses();
+  if (existingLlama.length > 0) {
+    const msg = `llama-server 已在运行 (PID ${existingLlama.join(', ')})，请先停止`;
+    pushLog(`[提示] ${msg}`, 'err');
+    return { ok: false, error: msg };
+  }
+  const existing = await findNinferProcesses();
+  if (existing.length > 0) {
+    pushLog(`[提示] 已有 NInfer 进程 (PID ${existing.join(', ')})，先停止`, 'err');
+    await killNinferProcesses();
+    await new Promise((r) => setTimeout(r, 800));
+  }
+
+  const ctxKNum = Number(ctxK) > 0 ? Number(ctxK) : undefined;
+  const args = ninfer.buildArgs(model, ctxKNum);
+  const cmdStr = ninfer.formatCommand(cfg, model, args);
+
+  // 记录本次实际用的上下文（token 数）
+  const usedCtx = (() => {
+    const i = args.indexOf('--max-context');
+    return i >= 0 ? Number(args[i + 1]) : 0;
+  })();
+
+  clearLogs();
+  pushLog(`[启动] ${model.name}  —  ${Math.round(usedCtx / 1024)}K 上下文 (${usedCtx} tokens)`, 'sys');
+  pushLog('[引擎] NInfer (WSL)', 'sys');
+  pushLog(`[命令] ${cmdStr}`, 'sys');
+
+  startingModel = model.id;
+  currentModel = model;
+  runningEngine = 'ninfer';
+
+  const wslArgs = ['-d', cfg.distro, '-u', 'root', '--', cfg.servePath, ...args];
+
+  try {
+    child = spawn('wsl.exe', wslArgs, {
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (e) {
+    startingModel = null;
+    runningEngine = null;
+    const msg = `启动失败: ${e.message}`;
+    pushLog(`[错误] ${msg}`, 'err');
+    return { ok: false, error: msg };
+  }
+
+  child.stdout.on('data', (d) => pushLog(d.toString('utf8'), 'out'));
+  child.stderr.on('data', (d) => pushLog(d.toString('utf8'), 'err'));
+  child.on('error', (e) => pushLog(`[错误] 进程错误: ${e.message}`, 'err'));
+
+  child.on('exit', (code, signal) => {
+    pushLog(`[进程退出] code=${code} signal=${signal || '-'}`, 'sys');
+    pushLog(`[结束] ${currentModel ? currentModel.name : ''} 已停止`, 'sys');
+    child = null;
+    currentModel = null;
+    startingModel = null;
+    runningEngine = null;
+    broadcastStatus();
+  });
+
+  const pid = child.pid;
+  pushLog(`[已启动] wsl 宿主 PID: ${pid}`, 'sys');
+  pushLog('[等待] NInfer 正在加载模型，约 30-90 秒，请稍候…', 'sys');
+
+  broadcastStatus();
+
+  const deadline = Date.now() + (Number(settings.readyTimeoutSec) || 180) * 1000;
+  let ready = false;
+  let realIdEarly = null;
+  while (Date.now() < deadline) {
+    if (!child) break;
+    if (await isPortOpen(model.port)) {
+      const pr = await probeReady(model.port);
+      if (pr.ready) { ready = true; realIdEarly = pr.modelId; break; }
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+
+  startingModel = null;
+
+  if (!ready) {
+    if (child) {
+      const msg = `${Number(settings.readyTimeoutSec) || 180} 秒内未检测到 NInfer 就绪`;
+      pushLog(`[警告] ${msg}`, 'err');
+      broadcastStatus();
+      return { ok: false, error: msg, pid };
+    }
+    broadcastStatus();
+    return { ok: false, error: '进程在就绪前退出，请查看日志', pid };
+  }
+
+  const realId = realIdEarly || await fetchModelId(model.port);
+  pushLog('[OK] NInfer 已就绪', 'sys');
+  pushLog(`[API] http://127.0.0.1:${model.port}/v1`, 'sys');
+  if (realId) pushLog(`[模型 id] ${realId}`, 'sys');
+
+  broadcastStatus();
+  return { ok: true, pid, port: model.port, modelId: realId, vision: false, engine: 'ninfer' };
+}
+
+/**
+ * NInfer 模型文件是否存在。
+ * 文件在 WSL 内，Windows 侧通过 \\wsl$\<distro>\... 访问；
+ * UNC 路径偶发不可达（WSL 没起来），此时退回 wsl 里 test -f。
+ */
+function ninferModelExists(wslPath) {
+  const local = wslToUnc(wslPath);
+  if (local && fs.existsSync(local)) return true;
+  // UNC 不可用时不阻塞启动 —— 交给 ninfer-serve 自己报错
+  return true;
+}
+
+/** /root/models/x.ninfer + distro → \\wsl$\<distro>\root\models\x.ninfer */
+function wslToUnc(wslPath) {
+  const p = String(wslPath || '');
+  if (!p.startsWith('/')) return null;
+  const cfg = ninferConfig();
+  return `\\\\wsl$\\${cfg.distro}` + p.replace(/\//g, '\\');
 }
 
 async function stopModel() {
+  // 两个引擎都可能残留，分别清一遍
+  const hadNinfer = (await findNinferProcesses()).length > 0;
+  if (hadNinfer) {
+    pushLog('[停止] 正在关闭 NInfer (WSL) …', 'sys');
+    const r = await killNinferProcesses();
+    if (r.killed) pushLog(`[停止] 已结束 ${r.killed} 个 ninfer-serve 进程`, 'sys');
+    await new Promise((res) => setTimeout(res, 800));
+  }
+
   pushLog('[停止] 正在关闭 llama-server …', 'sys');
   await killLlamaProcesses();
   await new Promise((r) => setTimeout(r, 600));
 
-  const still = await findLlamaProcesses();
+  let still = await findLlamaProcesses();
   if (still.length > 0) {
     pushLog('[警告] 进程仍在，强制结束…', 'err');
     await killLlamaProcesses();
     await new Promise((r) => setTimeout(r, 400));
+    still = await findLlamaProcesses();
   }
 
-  const after = await findLlamaProcesses();
-  if (after.length === 0) {
-    pushLog('[OK] llama-server 已停止', 'sys');
+  // NInfer 再确认一遍：WSL 里 kill 完可能还有残留
+  let stillNinfer = await findNinferProcesses();
+  if (stillNinfer.length > 0) {
+    pushLog('[警告] NInfer 进程仍在，再次强制结束…', 'err');
+    await killNinferProcesses();
+    await new Promise((r) => setTimeout(r, 800));
+    stillNinfer = await findNinferProcesses();
+  }
+
+  if (still.length === 0 && stillNinfer.length === 0) {
+    pushLog('[OK] 已停止', 'sys');
     child = null;
     currentModel = null;
     startingModel = null;
+    runningEngine = null;
     broadcastStatus();
     return { ok: true };
   }
-  pushLog(`[错误] 仍有进程存活: ${after.join(', ')}`, 'err');
+
+  const bits = [];
+  if (still.length) bits.push(`llama-server: ${still.join(', ')}`);
+  if (stillNinfer.length) bits.push(`ninfer-serve: ${stillNinfer.join(', ')}`);
+  pushLog(`[错误] 仍有进程存活: ${bits.join(' / ')}`, 'err');
   broadcastStatus();
-  return { ok: false, error: '无法停止 llama-server' };
+  return { ok: false, error: '无法停止：' + bits.join(' / ') };
 }
 
 function broadcastStatus() {
@@ -461,7 +793,7 @@ let tray = null;
 
 function notifyTray(msg) {
   if (tray && process.platform === 'win32') {
-    try { tray.displayBalloon({ title: 'llama.cpp 管理器', content: msg }); } catch (_) {}
+    try { tray.displayBalloon({ title: APP_NAME, content: msg }); } catch (_) {}
   }
 }
 
@@ -502,7 +834,7 @@ function createTray() {
   try {
     const { Tray, Menu } = require('electron');
     tray = new Tray(makeTrayIcon());
-    tray.setToolTip('llama.cpp 管理器');
+    tray.setToolTip(APP_NAME);
 
     const menu = Menu.buildFromTemplate([
       { label: '显示窗口', click: () => showWindow() },
@@ -552,11 +884,13 @@ ipcMain.handle('get-models', () => modelsWithPaths().map((m) => ({
   port: m.port,
   vision: m.vision,
   useMtp: m.useMtp,
+  engine: m.engine || 'llamacpp',
+  ninfer: m.ninfer || null,
   file: m.filePath,
-  fileExists: fs.existsSync(m.filePath),
+  fileExists: engineFileExists(m),
   mmproj: m.mmprojPath,
   mmprojExists: m.mmprojPath ? fs.existsSync(m.mmprojPath) : null,
-  sizeGb: fs.existsSync(m.filePath) ? fs.statSync(m.filePath).size / 1024 ** 3 : 0,
+  sizeGb: engineFileSizeGb(m),
 })));
 
 ipcMain.handle('get-status', () => probeStatus());
@@ -567,7 +901,44 @@ ipcMain.handle('clear-logs', () => { clearLogs(); return true; });
 
 /* --- 模型管理 --- */
 
+/**
+ * 把参数数组拼成可读、可直接粘进终端的命令行字符串。
+ * 含空格或引号的参数用双引号包起来，内部双引号转义。
+ */
+function formatCommand(exe, args) {
+  const quote = (s) => {
+    const v = String(s);
+    return /[\s"]/.test(v) ? '"' + v.replace(/"/g, '\\"') + '"' : v;
+  };
+  return [quote(exe), ...args.map(quote)].join(' ');
+}
+
 /** 模型列表，附带解析后的元信息（供管理界面用） */
+/**
+ * 模型文件是否存在。
+ *
+ * NInfer 的文件在 WSL 内，Windows 侧要用 \\wsl$\<distro>\… 才能 stat；
+ * 拿不到就当存在（交给引擎自己报错），避免 UNC 偶发不可达时误判成「文件缺失」。
+ */
+function engineFileExists(m) {
+  if (m.engine === 'ninfer') {
+    const unc = wslToUnc(m.filePath);
+    if (!unc) return true;
+    try { return fs.existsSync(unc); } catch (_) { return true; }
+  }
+  try { return fs.existsSync(m.filePath); } catch (_) { return false; }
+}
+
+/** 模型文件体积（GB）；取不到返回 0 */
+function engineFileSizeGb(m) {
+  if (m.engine === 'ninfer') {
+    const unc = wslToUnc(m.filePath);
+    if (!unc) return 0;
+    try { return fs.statSync(unc).size / 1024 ** 3; } catch (_) { return 0; }
+  }
+  try { return fs.statSync(m.filePath).size / 1024 ** 3; } catch (_) { return 0; }
+}
+
 ipcMain.handle('models-list', () => modelsWithPaths().map((m) => ({
   id: m.id,
   name: m.name,
@@ -576,17 +947,146 @@ ipcMain.handle('models-list', () => modelsWithPaths().map((m) => ({
   port: m.port,
   vision: m.vision,
   useMtp: m.useMtp,
+  noMmprojOffload: !!m.noMmprojOffload,
+  extraArgs: m.extraArgs || '',
+  engine: m.engine || 'llamacpp',
+  ninfer: m.ninfer || null,
   file: m.file,
   mmproj: m.mmproj,
   filePath: m.filePath,
   mmprojPath: m.mmprojPath,
-  fileExists: fs.existsSync(m.filePath),
+  fileExists: engineFileExists(m),
   mmprojExists: m.mmprojPath ? fs.existsSync(m.mmprojPath) : null,
-  sizeGb: fs.existsSync(m.filePath) ? fs.statSync(m.filePath).size / 1024 ** 3 : 0,
+  sizeGb: engineFileSizeGb(m),
 })));
+
+/**
+ * 预览某个模型「现在会用什么命令启动」。
+ *
+ * 不启动进程，只按当前配置（含引擎专属参数）组装一遍，
+ * 供「启动参数」模块显示。ctxK 不传时按启动逻辑取默认上下文。
+ */
+ipcMain.handle('model-args', (_e, id, ctxK) => {
+  const model = modelWithPath(id);
+  if (!model) return { ok: false, error: '模型不存在' };
+
+  const isNinfer = model.engine === 'ninfer';
+
+  if (isNinfer) {
+    const cfg = ninferConfig();
+    // buildArgs 自己会把 K 换算成 token，这里传 K 即可
+    const ctxNum = Number(ctxK) > 0
+      ? Number(ctxK)
+      : (Number(settings.defaultCtxK) || model.ctxK);
+
+    const args = ninfer.buildArgs(model, ctxNum);
+    const tokens = (() => {
+      const i = args.indexOf('--max-context');
+      return i >= 0 ? Number(args[i + 1]) : 0;
+    })();
+    return {
+      ok: true,
+      engine: 'ninfer',
+      exe: cfg.servePath,
+      args,
+      command: ninfer.formatCommand(cfg, model, args),
+      ctxK: Math.round(tokens / 1024),
+      ctxTokens: tokens,
+      ninfer: model.ninfer || null,
+      hasMmproj: false,
+      running: !!currentModel && currentModel.id === id,
+      wsl: cfg,
+    };
+  }
+
+  const ctxKNum = Number(ctxK) > 0
+    ? Number(ctxK)
+    : (Number(settings.defaultCtxK) || model.ctxK);
+  const ctxTokens = Math.round(ctxKNum * 1024);
+
+  const args = buildArgs(model, ctxTokens);
+  const serverExe = settings.serverExe || SERVER_EXE;
+
+  return {
+    ok: true,
+    engine: 'llamacpp',
+    exe: serverExe,
+    args,
+    command: formatCommand(serverExe, args),
+    ctxK: ctxKNum,
+    ctxTokens,
+    // 让界面能标注哪些开关生效了
+    noMmprojOffload: !!model.noMmprojOffload,
+    extraArgs: model.extraArgs || '',
+    hasMmproj: !!model.mmproj,
+    running: !!currentModel && currentModel.id === id,
+  };
+});
 
 /** 扫描模型目录 */
 ipcMain.handle('models-scan', (_e, dir) => scanner.scan(dir || currentModelsDir()));
+
+/* --- NInfer --- */
+
+/** NInfer 环境探测：WSL 发行版、运行时、模型目录 */
+ipcMain.handle('ninfer-probe', async () => {
+  const cfg = ninferConfig();
+  const distros = await ninfer.listDistros().catch(() => []);
+  const rt = await ninfer.probeRuntime(cfg.distro, cfg).catch(() => ({ ok: false, error: '探测失败' }));
+  return {
+    ok: true,
+    wslAvailable: distros.length > 0,
+    distros,
+    cfg,
+    runtime: rt,
+    available: distros.some((d) => d.name === cfg.distro) && !!rt.hasServe,
+  };
+});
+
+/**
+ * 扫描 NInfer 模型：WSL 内 + Windows 本地目录。
+ * WSL 不可用时只返回本地结果，不报错。
+ */
+ipcMain.handle('ninfer-scan', async () => {
+  const cfg = ninferConfig();
+  const out = { ok: true, wsl: [], local: [], errors: [] };
+
+  if (settings.ninferAutoScan !== false) {
+    try {
+      const dirs = [cfg.modelsDir, ...ninfer.WSL_MODEL_DIRS];
+      const r = await ninfer.scanWsl(cfg.distro, [...new Set(dirs)]);
+      if (r.ok) out.wsl = r.files;
+      else out.errors.push(r.error || 'WSL 扫描失败');
+    } catch (e) {
+      out.errors.push(e.message || String(e));
+    }
+  }
+
+  // Windows 侧：模型目录里如果有 .ninfer 也一并列出
+  try {
+    const r = ninfer.scanLocal(currentModelsDir());
+    if (r.ok) out.local = r.files;
+  } catch (_) { /* 忽略 */ }
+
+  // 补上 .ninfer 头部元数据（model_id 等），界面用来起名
+  for (const f of [...out.wsl]) {
+    const unc = wslToUnc(f.path);
+    f.meta = unc ? ninfer.readNinferMeta(unc) : null;
+  }
+  for (const f of out.local) {
+    f.meta = ninfer.readNinferMeta(f.path);
+  }
+
+  return out;
+});
+
+/** 读单个 .ninfer 的元数据（Windows 或 WSL 路径） */
+ipcMain.handle('ninfer-meta', (_e, p) => {
+  const target = String(p || '').startsWith('/') ? wslToUnc(p) : p;
+  if (!target) return { ok: false, error: '路径无效' };
+  const meta = ninfer.readNinferMeta(target);
+  return meta ? { ok: true, meta } : { ok: false, error: '无法解析 .ninfer 头部' };
+});
 
 /** 新增模型（自动分配 id 与端口） */
 ipcMain.handle('models-create', (_e, input) => {
@@ -613,6 +1113,7 @@ ipcMain.handle('models-update', (_e, id, patch) => {
   const cur = store.find(id);
   if (!cur) return { ok: false, error: '模型不存在' };
 
+  // NInfer 的文件路径同样不能在运行时改（进程正拿着它）
   const running = !!currentModel && currentModel.id === id;
   if (running) {
     const next = { ...cur, ...(patch || {}) };
@@ -624,6 +1125,10 @@ ipcMain.handle('models-update', (_e, id, patch) => {
     // 上下文等参数改完立即落盘，下次启动生效；文件与端口必须停掉再改
     if (blocked.length) {
       return { ok: false, error: '模型正在运行，请先停止再修改文件与端口' };
+    }
+    // 引擎不能在运行时切换
+    if (patch && patch.engine && patch.engine !== cur.engine) {
+      return { ok: false, error: '模型正在运行，请先停止再切换推理引擎' };
     }
   }
 
@@ -815,6 +1320,12 @@ ipcMain.handle('disk-usage', () => {
 });
 
 ipcMain.handle('open-url', (_e, url) => { shell.openExternal(url); return true; });
+
+/** 打开管理器的数据目录（userData），路径由 Electron 决定，不硬编码 */
+ipcMain.handle('open-datadir', () => {
+  shell.openPath(app.getPath('userData'));
+  return true;
+});
 
 ipcMain.handle('get-gpu', () => queryGpu());
 

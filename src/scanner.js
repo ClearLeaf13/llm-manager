@@ -14,6 +14,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const ninfer = require('./ninfer');
 
 /** gguf 文件魔数：'GGUF' */
 const GGUF_MAGIC = 0x46554747; // 小端读出的 "GGUF"
@@ -180,6 +181,11 @@ function isMmproj(filename) {
 
 /**
  * 扫描目录。
+ *
+ * 识别两类模型文件：
+ *   .gguf   —— llama.cpp 引擎
+ *   .ninfer —— NInfer 引擎（元数据在头部 JSON 里，见 ninfer.js）
+ *
  * @param {string} dir 模型目录
  * @returns {{ok:boolean, files?:Array, error?:string}}
  */
@@ -196,11 +202,29 @@ function scan(dir) {
   const files = [];
   for (const ent of entries) {
     if (!ent.isFile()) continue;
-    if (!/\.gguf$/i.test(ent.name)) continue;
+    const isGguf = /\.gguf$/i.test(ent.name);
+    const isNinfer = /\.ninfer$/i.test(ent.name);
+    if (!isGguf && !isNinfer) continue;
 
     const full = path.join(dir, ent.name);
     let size = 0;
     try { size = fs.statSync(full).size; } catch (_) { continue; }
+
+    if (isNinfer) {
+      // NInfer 模型：没有 mmproj 概念，元数据来自 .ninfer 头部
+      const meta = ninfer.readNinferMeta(full);
+      files.push({
+        file: ent.name,
+        sizeGb: size / 1024 ** 3,
+        mmproj: false,
+        meta,
+        engine: 'ninfer',
+        quantization: null,
+        modelId: meta ? meta.modelId : null,
+        contextLength: meta ? meta.contextLength : null,
+      });
+      continue;
+    }
 
     const mmproj = isMmproj(ent.name);
     const meta = mmproj ? null : readGgufMeta(full);
@@ -219,6 +243,7 @@ function scan(dir) {
       sizeGb: size / 1024 ** 3,
       mmproj,
       meta,
+      engine: 'llamacpp',
       quantization,
     });
   }

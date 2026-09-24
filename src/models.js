@@ -30,14 +30,11 @@ const MODELS_DIR = path.join(LLAMA_DIR, 'models');
 const SERVER_EXE = path.join(LLAMA_DIR, 'llama-server.exe');
 
 /**
- * 三个模型，顺序与原管理器菜单一致。
- * name      原菜单显示名
- * alias     传给 --alias 的模型 id（原 exe 的 ShortName）
- * file      gguf 主文件名（相对 MODELS_DIR，运行时解析成绝对路径）
- * mmproj    视觉投影文件名（多模态才有，可为 null）
- * ctxK      默认上下文长度（K tokens）
- * useMtp    是否启用 MTP 投机解码
- * port      服务端口
+ * 预置模型。
+ *
+ * engine 决定用哪个引擎启动：
+ *   'llamacpp' —— Windows 上的 llama-server.exe，file 是 models 目录下的 gguf 文件名
+ *   'ninfer'   —— WSL 里的 ninfer-serve，file 是 WSL 内的 .ninfer 绝对路径
  */
 const MODELS = [
   {
@@ -50,6 +47,7 @@ const MODELS = [
     useMtp: true,
     port: 8080,
     vision: false,
+    engine: 'llamacpp',
   },
   {
     id: 'vl8b',
@@ -61,6 +59,7 @@ const MODELS = [
     useMtp: false,
     port: 8081,
     vision: true,
+    engine: 'llamacpp',
   },
   {
     id: 'reap',
@@ -72,8 +71,57 @@ const MODELS = [
     useMtp: false,
     port: 8082,
     vision: true,
+    engine: 'llamacpp',
+  },
+  {
+    // NInfer 引擎的预置模型：跑在 WSL 里，file 是 WSL 内绝对路径。
+    // 只有真正探测到该文件时才值得保留，否则用户可一键删掉。
+    id: 'ninfer-qwen38',
+    name: 'Qwen3.8-27B (NInfer)',
+    alias: 'qwen3.8-27b',
+    file: '/root/models/qwen3_8_27b.ninfer',
+    mmproj: null,
+    ctxK: 96,
+    useMtp: false,
+    port: 8090,
+    vision: true,
+    engine: 'ninfer',
+    ninfer: {
+      maxContext: 98304,
+      kvDtype: 'q4',
+      prefillChunk: 896,
+      draftTokens: 3,
+      thinkingBudget: 2048,
+      vision: true,
+      visionMaxTokens: 2048,
+      embeddingHost: true,
+      spec: 'mtp',
+      noCudaGraph: true,
+      extraArgs: '',
+    },
   },
 ];
+
+/**
+ * 把「补充参数」文本切成参数数组。
+ *
+ * 支持双引号包裹的含空格参数（如 --chat-template-file "C:\my dir\t.jinja"），
+ * 空串与纯空白返回空数组。
+ *
+ * @param {string} text 用户在界面上填的补充参数
+ * @returns {string[]} 拆分后的参数
+ */
+function splitExtraArgs(text) {
+  const s = String(text || '').trim();
+  if (!s) return [];
+  const out = [];
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    out.push(m[1] !== undefined ? m[1] : (m[2] !== undefined ? m[2] : m[3]));
+  }
+  return out;
+}
 
 /** 原 exe 的 BuildArgs 模板，逐字保留默认采样参数。 */
 function buildArgs(model, ctxK) {
@@ -82,7 +130,10 @@ function buildArgs(model, ctxK) {
     '-m', file,
   ];
 
+  // 视觉投影：--no-mmproj-offload 让 mmproj 留在 CPU 内存里，
+  // 代价是 CPU 侧算视觉编码，收益是省下约 1 GB 显存（16 GB 卡上很关键）
   if (model.mmproj) {
+    if (model.noMmprojOffload) args.push('--no-mmproj-offload');
     args.push('--mmproj', model.mmprojPath);
   }
 
@@ -115,6 +166,9 @@ function buildArgs(model, ctxK) {
     args.push('--spec-type', 'draft-mtp', '--spec-draft-n-max', '2');
   }
 
+  // 用户补充参数：排在 --host/--port 之前，保证端口不被用户覆盖坏
+  args.push(...splitExtraArgs(model.extraArgs));
+
   args.push('--host', '127.0.0.1', '--port', String(model.port));
 
   return args;
@@ -122,6 +176,12 @@ function buildArgs(model, ctxK) {
 
 /**
  * 把模型定义里的文件名解析成绝对路径。
+ *
+ * llama.cpp 引擎：file 是 gguf 文件名，拼到 modelsDir 下。
+ * NInfer 引擎：file 是 WSL 内的绝对路径（/root/models/x.ninfer），
+ *             原样保留 —— 那个路径是给 Linux 侧二进制用的，
+ *             用 Windows 的 path.join 拼会得到错误结果。
+ *
  * @param {string} modelsDir 模型目录（来自设置或自动探测）
  * @param {Array} [list] 模型数组；不传则用内置的 MODELS
  * @returns {Array} 新的模型数组，附带 filePath / mmprojPath
@@ -129,11 +189,20 @@ function buildArgs(model, ctxK) {
 function resolveModels(modelsDir, list) {
   const dir = modelsDir || MODELS_DIR;
   const src = Array.isArray(list) ? list : MODELS;
-  return src.map((m) => ({
-    ...m,
-    filePath: path.join(dir, m.file),
-    mmprojPath: m.mmproj ? path.join(dir, m.mmproj) : null,
-  }));
+  return src.map((m) => {
+    const isNinfer = m.engine === 'ninfer';
+    const raw = String(m.file || '');
+    // WSL 路径是 posix 绝对路径；Windows 侧的绝对路径也原样保留
+    const isAbs = isNinfer
+      ? raw.startsWith('/')
+      : (path.isAbsolute(raw));
+
+    return {
+      ...m,
+      filePath: isAbs ? raw : path.join(dir, raw),
+      mmprojPath: m.mmproj ? path.join(dir, m.mmproj) : null,
+    };
+  });
 }
 
 /** 自动探测 llama.cpp 根目录：返回第一个含 llama-server.exe 的候选 */
@@ -153,6 +222,7 @@ module.exports = {
   MODELS,
   LLAMA_DIR_CANDIDATES,
   buildArgs,
+  splitExtraArgs,
   resolveModels,
   detectLlamaDir,
 };

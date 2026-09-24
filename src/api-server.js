@@ -108,18 +108,30 @@ function start(deps) {
         try {
           if (route === 'GET /status') {
             const status = await deps.getStatus();
-            const models = deps.listModels().map((m) => ({
-              id: m.id,
-              name: m.name,
-              alias: m.alias,
-              port: m.port,
-              running: !!status.ports[m.port],
-            }));
+            const models = deps.listModels().map((m) => {
+              // 引擎判定：NInfer 跑在 WSL 里，端口在 Windows 侧未必可见，
+              // 所以以「是否正是当前运行的模型」+ NInfer 进程为准。
+              const isCurrent = status.current === m.id;
+              const ninferUp = !!(status.ninferPids && status.ninferPids.length);
+              const running = (m.engine === 'ninfer')
+                ? (isCurrent && (ninferUp || !!status.ports[m.port]))
+                : !!status.ports[m.port];
+              return {
+                id: m.id,
+                name: m.name,
+                alias: m.alias,
+                port: m.port,
+                engine: m.engine || 'llamacpp',
+                running,
+              };
+            });
+            const anyRunning = models.some((m) => m.running) || !!status.anyRunning;
             return json(res, 200, {
               ok: true,
               models,
-              anyRunning: !!status.running,
+              anyRunning,
               current: status.current,
+              engine: status.engine || null,
               starting: !!status.starting,
             });
           }

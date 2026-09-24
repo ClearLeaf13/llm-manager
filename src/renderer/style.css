@@ -180,17 +180,191 @@ body {
 
 .pane { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 
-/* 模型栏宽度由 JS 控制（可拖动），这里给个兜底 */
-.pane.models {
-  flex: 0 0 280px;
-  width: 280px;
+/* 左栏：模型列表（宽度由 JS 控制，可拖动） */
+.pane.list-pane {
+  flex: 0 0 300px;
+  width: 300px;
   background: var(--bg);
   overflow: hidden;
 }
 
-.pane.console { flex: 1 1 auto; min-width: 180px; }
+/* 右栏：内容区，占满剩余空间 */
+.pane.content-pane { flex: 1 1 auto; min-width: 220px; }
 
-.pane.models.hidden, .pane.console.hidden { display: none; }
+.pane.hidden { display: none; }
+
+/* 内容区统一滚动容器 */
+.content-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 2px 18px 20px;
+}
+
+/* ---------------- 状态总览（第一页右栏） ---------------- */
+
+.statusgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 11px;
+  margin-bottom: 14px;
+}
+
+.scard {
+  position: relative;
+  padding: 14px 16px 15px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  transition: border-color .18s ease, background .18s ease;
+}
+.scard:hover { border-color: var(--border-strong); }
+
+/* 状态卡左侧的语义色条：一眼分辨运行/空闲 */
+.scard-accent::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 14px; bottom: 14px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent);
+}
+.scard-accent.ok::before { background: var(--ok); }
+.scard-accent.warn::before { background: var(--warn); }
+.scard-accent.idle::before { background: var(--border-strong); }
+
+/* 宽卡占满一行（状态/当前模型信息较长） */
+.scard-wide { grid-column: 1 / -1; }
+
+.scard-label {
+  font-size: 11px;
+  font-weight: 560;
+  letter-spacing: .3px;
+  color: var(--text-faint);
+  margin-bottom: 7px;
+}
+
+.scard-value {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -.3px;
+  color: var(--text);
+  line-height: 1.3;
+}
+.scard-value.mono { font-family: var(--mono); font-size: 17px; }
+
+.scard-model {
+  font-size: 16px;
+  overflow-wrap: anywhere;
+}
+
+.scard-sub {
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--text-faint);
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+}
+
+/* 进度条：显存 / 内存 / 磁盘 */
+.sbar {
+  margin-top: 9px;
+  height: 4px;
+  border-radius: 3px;
+  background: var(--bg-sunken);
+  overflow: hidden;
+}
+.sbar-fill {
+  height: 100%;
+  width: 0;
+  border-radius: 3px;
+  background: var(--accent);
+  transition: width .35s ease, background .35s ease;
+}
+.sbar-fill.warn { background: var(--warn); }
+.sbar-fill.err { background: var(--err); }
+
+/* 状态卡里的 pill 跟随卡片命名空间重新着色 */
+.scard .pill { font-size: 13px; padding: 2px 10px; border-radius: 7px; font-weight: 560; }
+.scard .pill.run { color: var(--ok); background: var(--ok-soft); }
+.scard .pill.load { color: var(--warn); background: var(--warn-soft); }
+.scard .pill.idle { color: var(--text-faint); background: var(--bg-sunken); }
+
+/* 快捷操作 */
+.sactions { display: flex; gap: 8px; flex-wrap: wrap; }
+.sactions .mini { margin-left: 0; }
+
+/* ---------------- 引擎徽标 / NInfer ---------------- */
+
+.engine-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 12px;
+  padding: 5px 11px;
+  border-radius: 8px;
+  font-size: 11.5px;
+  font-weight: 560;
+  letter-spacing: .2px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+.engine-tag .et-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--text-faint);
+}
+.engine-tag.ninfer { color: var(--accent); border-color: var(--accent-soft); background: var(--accent-soft); }
+.engine-tag.ninfer .et-dot { background: var(--accent); }
+.engine-tag.llamacpp .et-dot { background: var(--ok); }
+
+/* 参数分组里的两列布局 */
+.prow2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.prow2 .prow { margin-bottom: 12px; }
+
+/* 日志分组：固定高度，内部滚动 */
+.pgroup-log { margin-bottom: 0; }
+.pgroup-log .log-wrap {
+  height: 260px;
+  min-height: 160px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-sunken);
+  overflow: hidden;
+}
+
+.pgroup-title .log-actions { display: inline-flex; gap: 6px; }
+
+/* 设置里的 NInfer 状态行 */
+.sgroup-badge {
+  float: right;
+  font-size: 10.5px;
+  font-weight: 500;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  color: var(--text-faint);
+}
+.sgroup-badge.ok { color: var(--ok); background: var(--ok-soft); }
+.sgroup-badge.err { color: var(--err); background: var(--err-soft); }
+
+.nf-status {
+  margin-top: 4px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg-sunken);
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--text-faint);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.nf-status .ok { color: var(--ok); }
+.nf-status .err { color: var(--err); }
 
 /* --- 拖动条 --- */
 
@@ -396,6 +570,89 @@ input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; marg
 .log::-webkit-scrollbar-thumb:hover, .model-list::-webkit-scrollbar-thumb:hover { background: var(--text-faint); background-clip: content-box; }
 .log::-webkit-scrollbar-track, .model-list::-webkit-scrollbar-track { background: transparent; }
 
+/* ---------------- 启动参数模块 ---------------- */
+
+.params-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 2px 15px 16px;
+}
+
+.pgroup {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 11px 13px 13px;
+  margin-bottom: 11px;
+  background: var(--bg-raised, transparent);
+}
+
+.pgroup-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  font-weight: 560;
+  color: var(--text-dim);
+  margin-bottom: 10px;
+}
+/* summary 作为标题时不要默认的三角缩进 */
+details.plog > summary.pgroup-title { cursor: pointer; list-style: none; margin-bottom: 0; }
+details.plog > summary.pgroup-title::-webkit-details-marker { display: none; }
+details.plog[open] > summary.pgroup-title { margin-bottom: 10px; }
+.pgroup-note { font-weight: 400; color: var(--text-faint); font-size: 11px; }
+.pgroup-title .ghost { margin-left: auto; }
+
+.prow { margin-bottom: 11px; }
+.prow:last-child { margin-bottom: 0; }
+.prow > label { display: block; font-size: 11.5px; color: var(--text-dim); margin-bottom: 5px; }
+
+.prow-actions { display: flex; align-items: center; gap: 10px; }
+.prow-actions .mini { margin-left: 0; }
+
+.phint { font-size: 11px; color: var(--text-faint); line-height: 1.55; margin-top: 5px; }
+.phint.ok { color: var(--ok); }
+.phint.err { color: var(--err); }
+
+/* 补充参数输入框 */
+#p-extraargs {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  outline: none;
+  resize: vertical;
+  transition: border-color .15s ease;
+}
+#p-extraargs:focus { border-color: var(--accent); }
+
+/* 组装后的启动命令 */
+.pcmd {
+  margin: 0;
+  padding: 9px 11px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.62;
+  color: var(--text-dim);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: text;
+  max-height: 210px;
+  overflow-y: auto;
+}
+
+.plog-actions { justify-content: flex-end; margin-bottom: 8px; }
+details.plog .log-wrap { height: 190px; flex: 0 0 auto; }
+
 /* ---------------- Toast ---------------- */
 
 .toast {
@@ -538,11 +795,12 @@ input.switch:checked::after { transform: translateX(16px); }
 /* ---------------- 窄窗口 ---------------- */
 
 @media (max-width: 780px) {
-  .pane.models { flex-basis: 200px !important; width: 200px !important; }
+  .pane.list-pane { flex-basis: 200px !important; width: 200px !important; }
   .settings { flex-basis: 260px; width: 260px; }
+  .prow2 { grid-template-columns: 1fr; }   /* 参数两列挤不下就改单列 */
 }
 @media (max-width: 620px) {
-  .pane.models { display: none; }
+  .pane.list-pane { display: none; }
   .splitter#split-1 { display: none; }
 }
 
@@ -550,8 +808,7 @@ input.switch:checked::after { transform: translateX(16px); }
    模型管理
    ================================================================== */
 
-.pane.manage { flex: 1 1 auto; min-width: 220px; }
-.pane.manage.hidden { display: none; }
+.pane.list-pane.hidden { display: none; }
 
 /* --- 工具条 --- */
 .manage-bar {

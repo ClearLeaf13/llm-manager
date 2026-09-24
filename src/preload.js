@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('api', {
   getMemory: () => ipcRenderer.invoke('get-memory'),
   getGpu: () => ipcRenderer.invoke('get-gpu'),
   openUrl: (url) => ipcRenderer.invoke('open-url', url),
+  openDataDir: () => ipcRenderer.invoke('open-datadir'),
 
   // 模型管理
   modelsList: () => ipcRenderer.invoke('models-list'),
@@ -23,6 +24,12 @@ contextBridge.exposeInMainWorld('api', {
   modelsDeleteBatch: (ids, withFiles) => ipcRenderer.invoke('models-delete-batch', ids, withFiles),
   modelsReset: () => ipcRenderer.invoke('models-reset'),
   modelsNextPort: () => ipcRenderer.invoke('models-next-port'),
+  modelsArgs: (id, ctxK) => ipcRenderer.invoke('model-args', id, ctxK),
+
+  // NInfer（WSL 里的第二引擎）
+  ninferProbe: () => ipcRenderer.invoke('ninfer-probe'),
+  ninferScan: () => ipcRenderer.invoke('ninfer-scan'),
+  ninferMeta: (p) => ipcRenderer.invoke('ninfer-meta', p),
 
   // 磁盘占用
   diskUsage: () => ipcRenderer.invoke('disk-usage'),

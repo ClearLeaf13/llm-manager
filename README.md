@@ -1,6 +1,6 @@
-# 本地 LLM 管理器
+# 本地 LLM 聚合管理
 
-一个用于管理 [llama.cpp](https://github.com/ggml-org/llama.cpp) 本地推理服务的 Electron 桌面应用：一键切换模型、实时查看日志、监控显存占用。
+统一管理本地推理引擎的 Electron 桌面应用：一套界面管两种引擎 —— Windows 上的 [llama.cpp](https://github.com/ggml-org/llama.cpp) 与 WSL 里的 NInfer。一键切换模型、实时查看日志、监控显存占用。
 
 > 本仓库为**私有备份**，仅作者本人使用。
 
@@ -8,11 +8,14 @@
 
 ## 功能
 
-- **多模型切换** — 预置三套模型配置，点击即启动，自动清理上一个进程
-- **实时日志** — 捕获 `llama-server` 的 stdout/stderr，支持按类型过滤
-- **状态探测** — 自动检测 `llama-server.exe` 进程与端口占用情况
+- **双引擎** — llama.cpp（`.gguf`，Windows 原生）与 NInfer（`.ninfer`，WSL 内），同一份模型列表里统一启停
+- **多模型切换** — 点击即启动，自动清理上一个进程（两个引擎都会清）
+- **实时日志** — 捕获引擎的 stdout/stderr，支持按类型过滤
+- **状态总览** — 运行状态 / 当前模型 / 推理引擎 / 显存 / 内存 / 磁盘 / PID，带占用进度条
+- **启动参数** — 图形化调参（含 NInfer 的 KV 精度、投机解码、预填充块等），并实时预览最终命令
+- **自动扫描** — 扫 Windows 模型目录里的 `.gguf`，同时扫 WSL 里的 `.ninfer`
 - **显存监控** — 通过 `nvidia-smi` 读取 GPU 名称、显存占用、利用率
-- **路径自适应** — 自动探测 llama.cpp 安装位置，换机器无需改代码
+- **路径自适应** — 自动探测 llama.cpp 安装位置与 WSL 发行版，换机器无需改代码
 
 ---
 
@@ -23,6 +26,7 @@
 | Windows | 10 / 11 x64 | 仅支持 Windows（依赖 `tasklist` / `taskkill`） |
 | Node.js | ≥ 18 | 仅**源码运行**时需要；用打包版 exe 则无需安装 |
 | llama.cpp | 任意近期版本 | 需含 `llama-server.exe` 及配套 DLL |
+| WSL + NInfer | 可选 | 不装则自动隐藏 NInfer 相关功能，不影响 llama.cpp |
 | NVIDIA 驱动 | — | 可选；无 N 卡时显存监控自动降级隐藏 |
 
 ---
@@ -31,7 +35,7 @@
 
 ### 方式一：打包版（推荐，无需 Node.js）
 
-从 [Releases](../../releases) 下载 `本地LLM管理器.exe`，双击运行。
+从 [Releases](../../releases) 下载 `LLM-Manager-v<版本>.exe`，双击运行。
 
 ### 方式二：源码运行
 
@@ -57,7 +61,7 @@ npm run dist
 
 ---
 
-## 前置条件：准备 llama.cpp
+## 前置条件：准备推理引擎
 
 应用本身**不含**模型和推理引擎，需要你自行准备。
 
@@ -86,7 +90,22 @@ npm run dist
     └── mmproj-REAP-26B-F16.gguf
 ```
 
-### 2. 自定义路径
+### 2. 放置 NInfer（可选）
+
+NInfer 跑在 WSL 里，模型是 `.ninfer` 单文件。默认约定：
+
+| 项 | 默认值 |
+|---|---|
+| WSL 发行版 | `Ubuntu-24.04` |
+| 服务端 | `/root/ninfer-5080/build/apps/ninfer-serve` |
+| CLI | `/root/ninfer-5080/build/apps/ninfer` |
+| 模型目录 | `/root/models` |
+
+以上全部可在**设置 → NInfer** 里改，界面会实时显示探测结果（发行版是否在跑、二进制是否可执行、模型目录是否存在）。
+
+> 管理器通过 `wsl.exe` 调用引擎，并在**停止时确实结束 Linux 侧的进程**（只杀 Windows 宿主的 `wsl.exe` 会留下孤儿进程占着显存）。
+
+### 3. 自定义路径
 
 三种方式，任选其一：
 
@@ -96,7 +115,7 @@ npm run dist
 setx LLM_MANAGER_DIR "D:\AI\llama.cpp"
 ```
 
-**界面设置** —— 打开应用 → 设置 → 分别指定 `llama-server.exe` 和模型目录。
+**界面设置** —— 打开应用 → 设置 → 分别指定 `llama-server.exe`、模型目录，以及 NInfer 的 WSL 路径。
 
 **直接改代码** —— 编辑 `src/models.js` 的 `LLAMA_DIR_CANDIDATES`。
 
@@ -106,13 +125,16 @@ setx LLM_MANAGER_DIR "D:\AI\llama.cpp"
 
 ## 预置模型
 
-| ID | 显示名 | 量化 | 大小 | 端口 | 多模态 | MTP |
-|---|---|---|---|---|---|---|
-| `balanced` | Qwen3.6-35B-A3B I-Balanced | — | ~24 GB | 8080 | ✗ | ✓ |
-| `vl8b` | Qwen3-VL-8B-Instruct 视觉 | Q4_K_M | ~4.7 GB | 8081 | ✓ | ✗ |
-| `reap` | Qwen3.6-VL-REAP-26B-A3B 视觉 | IQ4_XS | ~13.6 GB | 8082 | ✓ | ✗ |
+| ID | 显示名 | 引擎 | 量化 | 大小 | 端口 | 多模态 | MTP |
+|---|---|---|---|---|---|---|---|
+| `balanced` | Qwen3.6-35B-A3B I-Balanced | llama.cpp | — | ~24 GB | 8080 | ✗ | ✓ |
+| `vl8b` | Qwen3-VL-8B-Instruct 视觉 | llama.cpp | Q4_K_M | ~4.7 GB | 8081 | ✓ | ✗ |
+| `reap` | Qwen3.6-VL-REAP-26B-A3B 视觉 | llama.cpp | IQ4_XS | ~13.6 GB | 8082 | ✓ | ✗ |
+| `ninfer-qwen38` | Qwen3.8-27B (NInfer) | NInfer | Q4 KV | ~15.3 GB | 8090 | ✓ | MTP-3 |
 
 模型文件**不在本仓库中**（总计约 44 GB，远超 Git 限制）。需要另行备份或下载。
+
+> 预置数据只在 `models.json` **不存在**时写入；已有配置不会被覆盖。
 
 ### 修改模型列表
 
