@@ -599,17 +599,34 @@ ipcMain.handle('models-create', (_e, input) => {
   return res;
 });
 
-/** 修改模型；运行中的模型不允许改端口/文件 */
+/** mmproj 归一：null / undefined / 空串都表示「无」，比较时视为同一个值 */
+const normMmproj = (v) => (v === null || v === undefined || v === '' ? '' : String(v));
+
+/**
+ * 修改模型；运行中的模型不允许改端口/文件。
+ *
+ * 注意：判定用的是「值有没有真的变」，而不是「patch 里有没有这个键」。
+ * 编辑弹窗每次保存都会把 file / mmproj / port 原样带上，若只看键是否存在，
+ * 那么只要模型在运行，连只改上下文都会被挡下来。
+ */
 ipcMain.handle('models-update', (_e, id, patch) => {
-  const running = currentModel && currentModel.id === id;
+  const cur = store.find(id);
+  if (!cur) return { ok: false, error: '模型不存在' };
+
+  const running = !!currentModel && currentModel.id === id;
   if (running) {
-    const touched = ['file', 'mmproj', 'port'].some(
-      (k) => patch && Object.prototype.hasOwnProperty.call(patch, k),
-    );
-    if (touched) {
+    const next = { ...cur, ...(patch || {}) };
+    const blocked = ['file', 'mmproj', 'port'].filter((k) => {
+      if (k === 'port') return Number(next.port) !== Number(cur.port);
+      if (k === 'mmproj') return normMmproj(next.mmproj) !== normMmproj(cur.mmproj);
+      return String(next.file ?? '') !== String(cur.file ?? '');
+    });
+    // 上下文等参数改完立即落盘，下次启动生效；文件与端口必须停掉再改
+    if (blocked.length) {
       return { ok: false, error: '模型正在运行，请先停止再修改文件与端口' };
     }
   }
+
   const res = store.update(id, patch || {});
   if (res.ok) broadcastStatus();
   return res;

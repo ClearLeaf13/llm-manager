@@ -79,6 +79,10 @@ function renderModels() {
     if (m.useMtp) badges.push('<span class="badge mtp">MTP</span>');
     if (isActive) badges.push('<span class="badge run">运行中</span>');
 
+    // 运行中禁用上下文输入 —— 用与 isActive 相同的判断，避免按钮显示「停止」
+    // 但输入框却还能改（外部启动的实例只满足 ports 条件）
+    const ctxLocked = isActive;
+
     card.innerHTML = `
       <div class="card-top">
         <span class="card-name">${esc(m.name)}</span>
@@ -86,10 +90,12 @@ function renderModels() {
       </div>
       <div class="card-meta">
         ${m.sizeGb ? m.sizeGb.toFixed(2) + ' GB' : '文件缺失'} · 端口 ${m.port}
+        ${ctxLocked ? ' · <span class="lock">运行中不可改，需停止后修改</span>' : ''}
       </div>
       <div class="card-foot">
         <input type="number" min="1" max="512" step="1" value="${m.ctxK}"
-               data-ctx="${m.id}" ${isActive ? 'disabled' : ''} />
+               data-ctx="${m.id}" ${ctxLocked ? 'disabled' : ''}
+               title="${ctxLocked ? '模型运行中，上下文需停止后修改（修改后保存到配置，下次启动生效）' : '启动时使用的上下文，改完点「启动」立即生效'}" />
         <span class="unit">K = <b>${m.ctxK * 1024}</b> tokens</span>
       </div>
     `;

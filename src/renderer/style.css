@@ -255,6 +255,11 @@ body.resizing * { user-select: none !important; }
 .badge.run { background: var(--ok-soft); color: var(--ok); }
 
 .card-meta { font-size: 11px; color: var(--text-faint); font-family: var(--mono); margin-bottom: 9px; }
+/* 运行中：提示要先停止才能改上下文 */
+.card-meta .lock { color: var(--warn); }
+
+/* 上下文输入框被锁定时给个明确的灰态，避免看起来还能改 */
+input[type="number"]:disabled { opacity: .55; cursor: not-allowed; }
 
 .card-foot { display: flex; align-items: center; gap: 7px; flex-wrap: nowrap; }
 
