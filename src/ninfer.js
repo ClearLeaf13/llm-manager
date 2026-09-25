@@ -459,22 +459,35 @@ function splitExtraArgs(text) {
 /**
  * 组装「可读的」完整命令 —— 给界面预览用。
  * 界面展示的是用户在 Windows 终端里能直接粘的那条 wsl 命令。
+ *
+ * servePathOverride：用户手改过命令时，可执行文件可能被换了，用他给的那个。
  */
-function formatCommand(cfg, model, args) {
+function formatCommand(cfg, model, args, servePathOverride) {
   const quote = (s) => {
     const v = String(s);
     return /[\s"]/.test(v) ? '"' + v.replace(/"/g, '\\"') + '"' : v;
   };
-  const inner = [cfg.servePath, ...args].map(quote).join(' ');
+  const bin = servePathOverride || cfg.servePath;
+  const inner = [bin, ...args].map(quote).join(' ');
   return `wsl -d ${cfg.distro} -u root -- ${inner}`;
 }
 
 /** 启动模式：服务 / 单次问答 */
 const NINFER_MODES = ['serve', 'cli'];
 
+/**
+ * NInfer 侧「不许在命令里改」的参数。
+ *
+ * 模型路径（第一个位置参数）没法按名字识别，由 applyCmdOverride 之外的
+ * 校验兜住；这里列的是按名字能认出来的关键项：端口决定界面怎么探测状态、
+ * 开 WebUI，model-id 是界面显示的名字。
+ */
+const NINFER_PROTECTED = ['--port', '--model-id', '--host'];
+
 module.exports = {
   NINFER_DEFAULTS,
   NINFER_PARAM_DEFAULTS,
+  NINFER_PROTECTED,
   WSL_MODEL_DIRS,
   NINFER_MODES,
   runWsl,

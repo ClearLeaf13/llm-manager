@@ -13,6 +13,8 @@ const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
 const html = fs.readFileSync(path.join(ROOT, 'src/renderer/index.html'), 'utf8');
+// 真实命令行拼装：stub 的 modelsArgs 要用它，才能反映开关变化
+const models = require(path.join(ROOT, 'src/models'));
 
 /* ---------------- 最小 DOM ---------------- */
 
@@ -127,7 +129,9 @@ class El {
   focus() {}
   get firstChild() { return this.children[0] || null; }
   get scrollHeight() { return 100; }
-  get scrollTop() { return 0; }
+  // scrollTop 可读可写：切到日志页时 renderer 会把它拉到底
+  get scrollTop() { return this._scrollTop || 0; }
+  set scrollTop(v) { this._scrollTop = v; }
   get clientHeight() { return 100; }
 }
 
@@ -190,7 +194,9 @@ const MODELS_STUB = [
     vision: true, useMtp: false, engine: 'llamacpp', ninfer: null,
     file: 'reap.gguf', filePath: 'C:\\m\\reap.gguf', fileExists: true,
     mmproj: 'mm.gguf', mmprojPath: 'C:\\m\\mm.gguf', mmprojExists: true,
-    sizeGb: 13.6, noMmprojOffload: true, extraArgs: '' },
+    sizeGb: 13.6, noMmprojOffload: true, extraArgs: '',
+    // 出厂默认：开关缺省即开（与 models.js PARAM_DEFAULTS 一致）
+    jinja: true, flashAttn: true, ctxShift: true, loadMode: 'mlock' },
   { id: 'nf1', name: 'Qwen3.8-27B (NInfer)', alias: 'qwen3.8-27b', ctxK: 96, port: 8090,
     vision: true, useMtp: false, engine: 'ninfer',
     ninfer: { maxContext: 98304, kvDtype: 'q4', prefillChunk: 896, draftTokens: 3,
@@ -204,6 +210,8 @@ const STATUS_STUB = { running: true, pids: [1234], ninferPids: [],
   ninfer: { distro: 'Ubuntu-24.04', distroState: 'stopped', pids: [] },
   engine: 'llamacpp', ports: { 8082: true }, current: 'reap', starting: false };
 let lastPatch = null;
+/** 记录「恢复默认参数」向主进程请求的是哪个模型的默认值 */
+let defaultsAsked = null;
 
 global.window.api = {
   getSettings: async () => ({ theme: 'dark', zoom: 1, defaultCtxK: 32, readyTimeoutSec: 180,
@@ -235,18 +243,44 @@ global.window.api = {
       { file: 'mmproj-extra-F16.gguf', sizeGb: 0.9, mmproj: true, engine: 'llamacpp', meta: null },
     ],
   }),
-  modelsArgs: async (id, ctxK) => {
-    const m = MODELS_STUB.find((x) => x.id === id);
-    const k = Number(ctxK) || (m ? m.ctxK : 32);
-    if (m && m.engine === 'ninfer') {
+  modelsArgs: async (id, ctxK, opts) => {
+    const base = MODELS_STUB.find((x) => x.id === id);
+    const k = Number(ctxK) || (base ? base.ctxK : 32);
+    if (base && base.engine === 'ninfer') {
+      const cmd = 'wsl -d Ubuntu-24.04 -u root -- ninfer-serve ' + base.file
+        + ' --max-context ' + (k * 1024);
       return { ok: true, engine: 'ninfer', ctxK: k, ctxTokens: k * 1024,
-        command: 'wsl -d Ubuntu-24.04 -u root -- ninfer-serve ' + m.file + ' --max-context ' + (k * 1024),
-        ninfer: m.ninfer, hasMmproj: false, running: false };
+        command: cmd, baseCommand: cmd, cmdOverride: (opts && opts.cmdOverride) || '',
+        ninfer: base.ninfer, hasMmproj: false, running: false };
     }
+    // 真实应用里命令预览反映的是「界面上当前勾了什么」（未保存也算）：
+    // 渲染进程把实时值当 opts 传下来，主进程白名单覆盖后再交给真实 buildArgs。
+    const m = { ...(base || {}), ...(opts || {}) };
+    const baseCmd = 'llama-server.exe ' + models.buildArgs(m, k).join(' ');
+    // 有命令覆盖时，真实主进程会用 applyCmdOverride 拼出「用户写的样子」，
+    // 这里用同一套逻辑，保证测试覆盖的就是产品行为。
+    const ov = models.applyCmdOverride(
+      models.buildArgs(m, k), (opts && opts.cmdOverride) || '',
+      'llama-server.exe', ['-m', '--mmproj', '--host', '--port']);
     return { ok: true, engine: 'llamacpp', ctxK: k, ctxTokens: k * 1024,
-      command: 'llama-server.exe -m ' + (m ? m.file : '') + ' -c ' + (k * 1024),
-      hasMmproj: !!(m && m.mmproj), noMmprojOffload: !!(m && m.noMmprojOffload),
-      extraArgs: '', running: false };
+      command: 'llama-server.exe ' + ov.args.join(' '),
+      baseCommand: baseCmd,
+      cmdOverride: (opts && opts.cmdOverride) || '',
+      cmdOverridden: ov.applied, protectedKeys: ov.protectedKeys,
+      hasMmproj: !!(base && base.mmproj), noMmprojOffload: !!m.noMmprojOffload,
+      extraArgs: m.extraArgs || '', running: false };
+  },
+  // 恢复默认参数：默认值由主进程给，这里按引擎给一份与 PARAM_DEFAULTS 一致的
+  modelDefaults: async (id) => {
+    defaultsAsked = id;
+    const m = MODELS_STUB.find((x) => x.id === id);
+    if (m && m.engine === 'ninfer') {
+      return { ok: true, engine: 'ninfer', ctxK: 96, ninfer: {
+        kvDtype: 'q4', spec: 'mtp', prefillChunk: 512, draftTokens: 3,
+        thinkingBudget: 2048, vision: true, visionMaxTokens: 2048,
+        embeddingHost: true, noCudaGraph: true } };
+    }
+    return { ok: true, engine: 'llamacpp', ...models.paramDefaults('llamacpp') };
   },
   modelsUpdate: async (id, patch) => { lastPatch = { id, patch }; return { ok: true }; },
   modelsCreate: async (p) => ({ ok: true, model: p }),
@@ -273,12 +307,15 @@ global.window.api = {
   onLog: () => {}, onStatus: () => {}, onWindowState: () => {},
 };
 
-global.confirm = () => false;
+// confirm 是按值传进 renderer 的，测试中途改 global.confirm 不会生效；
+// 用一个可变的转发器，让用例能按需放行/拦截确认框
+let confirmAnswer = false;
+global.confirm = () => confirmAnswer;
 global.clearTimeout = clearTimeout;
 global.setInterval = () => 0;   // 关掉轮询，避免测试进程不退出
 
 // 侧栏按钮（HTML 里结构特殊，手动建）
-const railViews = ['models', 'manage'].map((v) => {
+const railViews = ['models', 'manage', 'log'].map((v) => {
   const b = new El('button');
   b.className = 'rail-btn' + (v === 'models' ? ' active' : '');
   b.dataset.view = v;
@@ -314,13 +351,14 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 (async () => {
   await wait(200);
 
-  console.log('\n【A】两页切换：左右栏显示');
+  console.log('\n【A】三页切换：左右栏显示');
   railViews[1].dispatchEvent('click');
   await wait(150);
   ok($('pane-models').classList.contains('hidden'), '第二页隐藏「快速启用」左栏');
   ok(!$('pane-manage').classList.contains('hidden'), '第二页显示「模型管理」左栏');
   ok($('pane-status').classList.contains('hidden'), '第二页隐藏「状态总览」');
-  ok(!$('pane-params').classList.contains('hidden'), '第二页显示「启动参数 + 日志」');
+  ok(!$('pane-params').classList.contains('hidden'), '第二页显示「启动参数」');
+  ok($('pane-log').classList.contains('hidden'), '第二页隐藏日志页');
 
   railViews[0].dispatchEvent('click');
   await wait(150);
@@ -328,6 +366,18 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   ok($('pane-manage').classList.contains('hidden'), '第一页隐藏「模型管理」左栏');
   ok(!$('pane-status').classList.contains('hidden'), '第一页显示「状态总览」');
   ok($('pane-params').classList.contains('hidden'), '第一页隐藏「启动参数」');
+
+  console.log('\n【A2】第三页：日志整页');
+  railViews[2].dispatchEvent('click');
+  await wait(150);
+  ok(!$('pane-log').classList.contains('hidden'), '第三页显示日志页');
+  ok($('pane-models').classList.contains('hidden'), '日志页隐藏左栏（整页展示）');
+  ok($('pane-status').classList.contains('hidden'), '日志页隐藏状态总览');
+  ok($('pane-params').classList.contains('hidden'), '日志页隐藏启动参数');
+  ok($('split-1').classList.contains('hidden'), '日志页没有左栏，拖动条一并收起');
+  railViews[0].dispatchEvent('click');
+  await wait(150);
+  ok(!$('split-1').classList.contains('hidden'), '回到第一页后拖动条恢复显示');
 
   console.log('\n【B】拖动条：两页都要能拖（本轮修复的核心）');
   const sp = $('split-1');
@@ -357,11 +407,14 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   ok(String(savedSettings[savedSettings.length - 1].modelsWidth) === '432',
      '记住的是第二页宽度 432');
 
-  console.log('\n【C】状态总览：推理引擎卡');
-  const eng = $('st-engine').textContent;
-  ok(eng === 'llama.cpp', '当前 llama.cpp 模型 → 引擎显示 "' + eng + '"');
-  ok(/进程/.test($('st-engine-sub').textContent),
-     '副标题含进程信息："' + $('st-engine-sub').textContent + '"');
+  console.log('\n【C】状态总览：模型与引擎合并卡');
+  const pill = $('st-engine-pill');
+  ok(pill.textContent === 'llama.cpp',
+     '模型名前挂的引擎标签显示 "' + pill.textContent + '"');
+  ok(pill.hidden === false, '有模型在跑时引擎标签可见');
+  ok(pill.dataset.engine === 'llamacpp', '引擎标签带 llamacpp 标记（供配色用）');
+  ok(/进程/.test($('st-model-sub').textContent),
+     '副标题含引擎的进程信息："' + $('st-model-sub').textContent + '"');
 
   console.log('\n【D】首页卡片：上下文只读展示 + 引擎标签');
   // 卡片是 appendChild 进去的，父容器的 innerHTML 不反映子节点 —— 要看卡片自己的 innerHTML
@@ -410,9 +463,45 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   railViews[1].dispatchEvent('click');
   await wait(200);
   ok(/llama\.cpp/.test($('p-engine-tag').innerHTML), '默认选中 llama.cpp 模型时徽标正确');
-  ok($('p-ninfer-group').hidden === true, 'llama.cpp 模型下 NInfer 分组隐藏');
+  ok($('popt-ninfer').hidden === true, 'llama.cpp 模型下 NInfer 子菜单隐藏');
+  ok($('popt-adv').hidden === false, 'llama.cpp 模型下通用开关子菜单可见');
   ok($('p-row-nommproj').hidden === false, 'llama.cpp 模型下 mmproj 行可见');
-  ok($('p-cmd').textContent.indexOf('llama-server') === 0, 'llama.cpp 模型命令预览是 llama-server');
+  ok($('p-cmd').value.indexOf('llama-server') === 0, 'llama.cpp 模型命令预览是 llama-server');
+
+  console.log('\n【E2】llama.cpp 启动开关真的改变命令');
+  // 默认全开：命令里应依次出现这几个 flag
+  ok(/--jinja/.test($('p-cmd').value), '默认命令含 --jinja');
+  ok(/-fa on/.test($('p-cmd').value), '默认命令含 -fa on');
+  ok(/--context-shift/.test($('p-cmd').value), '默认命令含 --context-shift');
+  ok(/--load-mode mlock/.test($('p-cmd').value), '默认命令含 --load-mode mlock');
+  ok($('p-jinja').checked === true, 'jinja 开关默认为开');
+  // jinja 归在「对话模板」组，摘要应写在那一组
+  ok(/jinja/.test($('popt-tpl-val').textContent), '模板摘要显示 jinja 已开');
+  ok(/shift/.test($('popt-adv-val').textContent) && /fa/.test($('popt-adv-val').textContent),
+     '高级摘要显示 shift / fa 已开');
+
+  // 关掉 jinja + 换 mmap，命令预览要跟着变
+  $('p-jinja').checked = false;
+  $('p-jinja').dispatchEvent('change');
+  await wait(150);
+  ok(!/--jinja/.test($('p-cmd').value), '关掉后命令里不再有 --jinja');
+  ok(/无 jinja/.test($('popt-tpl-val').textContent), '模板摘要同步标注无 jinja');
+
+  $('p-loadmode').value = 'mmap';
+  $('p-loadmode').dispatchEvent('change');
+  await wait(150);
+  ok(/--load-mode mmap/.test($('p-cmd').value), '加载方式切到 mmap 后命令同步');
+  ok(/mmap/.test($('popt-mem-val').textContent), '显存摘要显示 mmap');
+
+  // 保存后必须把这些开关写进 patch
+  $('p-save').dispatchEvent('click');
+  await wait(250);
+  ok(lastPatch && lastPatch.patch.jinja === false,
+     'jinja=关闭 写入 patch（实际 ' + (lastPatch && lastPatch.patch.jinja) + '）');
+  ok(lastPatch && lastPatch.patch.loadMode === 'mmap',
+     'loadMode=mmap 写入 patch（实际 ' + (lastPatch && lastPatch.patch.loadMode) + '）');
+  ok(lastPatch && lastPatch.patch.flashAttn === true, 'flashAttn 一并写入 patch');
+  ok(lastPatch && lastPatch.patch.ctxShift === true, 'ctxShift 一并写入 patch');
 
   const rows = $('manage-list').children.filter((r) => r._classes && r._classes.has('mrow'));
   ok(rows.length === 2, '管理列表渲染出 2 行（实际 ' + rows.length + '）');
@@ -428,10 +517,11 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     await wait(300);
 
     ok(/NInfer/.test($('p-engine-tag').innerHTML), '引擎徽标切到 NInfer');
-    ok($('p-ninfer-group').hidden === false, 'NInfer 参数分组已展开');
+    ok($('popt-ninfer').hidden === false, 'NInfer 子菜单已展开显示');
+    ok($('popt-adv').hidden === true, 'llama.cpp 通用开关子菜单已隐藏');
     ok($('p-row-nommproj').hidden === true, 'llama.cpp 的 mmproj 行已隐藏');
-    ok($('p-cmd').textContent.indexOf('wsl -d') === 0,
-       '命令预览是 wsl 命令："' + $('p-cmd').textContent.slice(0, 46) + '…"');
+    ok($('p-cmd').value.indexOf('wsl -d') === 0,
+       '命令预览是 wsl 命令："' + $('p-cmd').value.slice(0, 46) + '…"');
     ok($('p-nf-kvdtype').value === 'q4', 'KV 精度回填 q4（实际 ' + $('p-nf-kvdtype').value + '）');
     ok(String($('p-nf-prefill').value) === '896', '预填充块回填 896（实际 ' + $('p-nf-prefill').value + '）');
     ok($('p-nf-vision').checked === true, '视觉开关回填为开');
@@ -454,6 +544,76 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
        (lastPatch && lastPatch.patch && lastPatch.patch.ninfer && lastPatch.patch.ninfer.prefillChunk) + '）');
     ok(lastPatch && !('noMmprojOffload' in lastPatch.patch),
        'NInfer 模型不会误写 llama.cpp 的 noMmprojOffload 字段');
+    ok(lastPatch && !('jinja' in lastPatch.patch),
+       'NInfer 模型不会误写 llama.cpp 的 jinja 字段');
+  }
+
+  console.log('\n【H】恢复默认参数');
+  // 先切回 llama.cpp 模型，并制造一组「被改坏」的参数
+  const lcRow = rows.filter((r) => /llama\.cpp/.test(r.innerHTML))[0];
+  ok(!!lcRow, '找到 llama.cpp 那一行');
+  if (lcRow) {
+    lcRow.dispatchEvent('click');
+    await wait(300);
+    ok($('popt-adv').hidden === false, '切回 llama.cpp 后通用开关子菜单恢复显示');
+
+    $('p-ctx').value = '7';
+    $('p-ctx').dispatchEvent('input');
+    $('p-jinja').checked = false;
+    $('p-jinja').dispatchEvent('change');
+    $('p-loadmode').value = 'mmap';
+    $('p-loadmode').dispatchEvent('change');
+    await wait(150);
+    ok(String($('p-ctx').value) === '7', '先把上下文改成 7');
+
+    // 恢复默认：确认框需要放行，否则永远走不到取默认值那步
+    confirmAnswer = true;
+    $('p-restore').dispatchEvent('click');
+    await wait(300);
+
+    ok(defaultsAsked === 'reap', '恢复默认时按当前模型取默认值（实际 ' + defaultsAsked + '）');
+    ok(String($('p-ctx').value) === '32',
+       '上下文恢复为默认 32（实际 ' + $('p-ctx').value + '）');
+    ok($('p-jinja').checked === true, 'jinja 恢复为默认开');
+    ok($('p-loadmode').value === 'mlock', '加载方式恢复为默认 mlock');
+    ok(/--jinja/.test($('p-cmd').value), '命令预览同步恢复出 --jinja');
+    ok(/--load-mode mlock/.test($('p-cmd').value), '命令预览同步恢复 mlock');
+    ok(/默认参数/.test($('p-status').textContent), '状态栏提示已填入默认参数');
+
+    // 只填框不落盘：恢复本身不能偷偷写配置
+    const patchBefore = lastPatch;
+    await wait(120);
+    ok(lastPatch === patchBefore, '恢复默认只改输入框，不会自动保存');
+
+    // 用户确认后点保存才真正写回默认值
+    $('p-save').dispatchEvent('click');
+    await wait(250);
+    ok(lastPatch && lastPatch.patch.ctxK === 32,
+       '保存后上下文写回 32（实际 ' + (lastPatch && lastPatch.patch.ctxK) + '）');
+    ok(lastPatch && lastPatch.patch.jinja === true, '保存后 jinja 写回开');
+    ok(lastPatch && lastPatch.patch.loadMode === 'mlock', '保存后 loadMode 写回 mlock');
+
+    console.log('\n【F2】KVMem 开关');
+    ok($('p-kvmem').checked === false || $('p-kvmem').checked === true,
+       'KVMem 开关可读（默认关）');
+    // 默认关：命令里不该出现 --kvmem
+    $('p-kvmem').checked = false;
+    $('p-kvmem').dispatchEvent('change');
+    await wait(150);
+    ok(!/--kvmem/.test($('p-cmd').value),
+       '默认关闭时命令里没有 --kvmem："' + $('p-cmd').value.slice(0, 60) + '…"');
+
+    // 打开：命令里应出现 --kvmem，并且保存时落盘
+    $('p-kvmem').checked = true;
+    $('p-kvmem').dispatchEvent('change');
+    await wait(200);
+    ok(/--kvmem/.test($('p-cmd').value),
+       '开启后命令里出现 --kvmem："' + $('p-cmd').value.slice(0, 80) + '…"');
+
+    $('p-save').dispatchEvent('click');
+    await wait(250);
+    ok(lastPatch && lastPatch.patch.kvmem === true,
+       '保存后 kvmem 落盘（实际 ' + (lastPatch && lastPatch.patch.kvmem) + '）');
   }
 
   console.log('\n【G】自动扫描：只列没配置过的东西');

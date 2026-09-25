@@ -1,6 +1,6 @@
 {
   "name": "llm-manager",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "description": "本地 LLM 聚合管理 — 统一管理 llama.cpp 与 NInfer 推理引擎",
   "main": "src/main.js",
   "scripts": {

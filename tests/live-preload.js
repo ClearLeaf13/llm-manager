@@ -41,17 +41,67 @@ contextBridge.exposeInMainWorld('api', {
   diskUsage: async () => ({ dir: 'C:\\', freeGb: 200, totalGb: 900, usedGb: 24.5 }),
   modelsList: async () => state.models.map((m) => ({ ...m })),
   modelsScan: async () => ({ ok: true, dir: 'C:\\m', files: state.scan }),
-  modelsArgs: async (id, ctxK) => {
-    const m = state.models.find((x) => x.id === id) || {};
+  modelsArgs: async (id, ctxK, opts) => {
+    const stored = state.models.find((x) => x.id === id) || {};
+    const m = { ...stored, ...(opts || {}) };
     const k = Number(ctxK) || m.ctxK || 32;
-    if (m.engine === 'ninfer') {
+    const ovText = (opts && typeof opts.cmdOverride === 'string') ? opts.cmdOverride.trim() : '';
+    if (stored.engine === 'ninfer') {
+      const cmd = 'wsl -d Ubuntu-24.04 -u root -- ninfer-serve ' + stored.file + ' --max-context ' + (k * 1024);
       return { ok: true, engine: 'ninfer', ctxK: k, ctxTokens: k * 1024,
-        command: 'wsl -d Ubuntu-24.04 -u root -- ninfer-serve ' + m.file + ' --max-context ' + (k * 1024),
-        ninfer: m.ninfer, hasMmproj: false, running: false };
+        command: cmd, baseCommand: cmd, cmdOverride: ovText, cmdOverridden: false,
+        ninfer: stored.ninfer, hasMmproj: false, running: false };
+    }
+    // 沙箱 preload 只能 require('electron')，拿不到 buildArgs。
+    // render-live.js 用真实 buildArgs 为用例涉及的开关组合预先算好命令行存进 argsTable，
+    // 这里按当前值查表 —— 查到的就是真实拼装结果，不是手写的字符串。
+    const key = [m.jinja !== false, m.flashAttn !== false, m.ctxShift !== false,
+                 !!m.useMtp, m.loadMode || 'mlock', !!m.noMmprojOffload].join('|');
+    const hit = (DATA.argsTable || {})[key + '|' + k];
+    const base = hit || ('llama-server.exe（未知组合 ' + key + '|' + k + '）');
+    // 命令覆盖的产品语义在 models.applyCmdOverride 里，render-live.js 已经算出
+    // 「未改动 / 改过」两种结果并放进 DATA.overrideTable，这里照查表结果返回。
+    if (ovText) {
+      const ovKey = key + '|' + k + '|' + ovText;
+      const ovHit = (DATA.overrideTable || {})[ovKey];
+      if (ovHit) {
+        return { ok: true, engine: 'llamacpp', ctxK: k, ctxTokens: k * 1024,
+          command: ovHit.command, baseCommand: base, cmdOverride: ovText,
+          cmdOverridden: ovHit.applied, protectedKeys: ovHit.protectedKeys,
+          hasMmproj: !!m.mmproj, noMmprojOffload: !!m.noMmprojOffload, running: false };
+      }
+      // 表里没有（例如用户临时敲了个新 flag）：按「原样保留、受保护项补回」的
+      // 产品语义近似处理，保证 renderer 侧链路仍能验证。
+      const tokens = ovText.split(/\s+/);
+      const exe0 = tokens.shift() || 'llama-server.exe';
+      const kept = tokens.filter((t2) => !['-m', '--mmproj', '--host', '--port'].includes(t2));
+      return { ok: true, engine: 'llamacpp', ctxK: k, ctxTokens: k * 1024,
+        command: exe0 + ' ' + kept.concat(['-m', m.filePath || m.file || '', '--host', '127.0.0.1', '--port', String(m.port || 8080)]).join(' '),
+        baseCommand: base, cmdOverride: ovText, cmdOverridden: true,
+        protectedKeys: ['-m', '--host', '--port'],
+        hasMmproj: !!m.mmproj, noMmprojOffload: !!m.noMmprojOffload, running: false };
     }
     return { ok: true, engine: 'llamacpp', ctxK: k, ctxTokens: k * 1024,
-      command: 'llama-server.exe -m ' + m.file + ' -c ' + (k * 1024),
-      hasMmproj: !!m.mmproj, noMmprojOffload: false, extraArgs: '', running: false };
+      command: base, baseCommand: base, cmdOverride: '', cmdOverridden: false,
+      hasMmproj: !!m.mmproj, noMmprojOffload: !!m.noMmprojOffload,
+      extraArgs: m.extraArgs || '', running: false };
+  },
+  modelDefaults: async (id) => {
+    const m = state.models.find((x) => x.id === id) || {};
+    if (m.engine === 'ninfer') {
+      return { ok: true, engine: 'ninfer', ctxK: 96, ninfer: {
+        kvDtype: 'q4', spec: 'mtp', prefillChunk: 512, draftTokens: 3,
+        thinkingBudget: 2048, vision: true, visionMaxTokens: 2048,
+        embeddingHost: true, noCudaGraph: true } };
+    }
+    return { ok: true, engine: 'llamacpp', ctxK: 32, noMmprojOffload: false,
+      useMtp: false, jinja: true, flashAttn: true, ctxShift: true, loadMode: 'mlock',
+      gpuLayers: -1, splitMode: 'layer', kvOffload: true, threads: -1, threadsBatch: -1,
+      batch: 2048, ubatch: 512, fits: true, chatTemplateFile: '', reasoningFormat: 'auto',
+      temperature: '0.6', topP: '0.95', topK: 20, minP: '0.0',
+      repeatPenalty: '1.0', presencePenalty: '0.0', parallel: 1, timeout: 0,
+      cacheTypeK: 'q8_0', cacheTypeV: 'q8_0', noOpOffload: false, metrics: false,
+      noWebui: false };
   },
   modelsUpdate: async (id, patch) => { state.patches.push({ id, patch }); return { ok: true }; },
   modelsCreate: async (p) => { state.created.push(p); return { ok: true, model: p }; },

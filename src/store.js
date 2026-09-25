@@ -25,6 +25,18 @@ const FIELDS = [
   'ctxK', 'useMtp', 'port', 'vision',
   // 启动参数：mmproj 不卸载到 GPU（省显存）；补充参数（本版本未内置的 flag 走这里）
   'noMmprojOffload', 'extraArgs',
+  // 可在界面上开关的启动选项（默认值见 models.js 的 PARAM_DEFAULTS）
+  'jinja', 'flashAttn', 'ctxShift', 'loadMode',
+  // 显存与卸载 / 性能 / 模板 / 采样（同上，分类见 PARAM_GROUPS）
+  'gpuLayers', 'kvOffload', 'splitMode',
+  'threads', 'threadsBatch', 'ubatch', 'batch', 'fits',
+  'chatTemplateFile', 'reasoningFormat',
+  'temperature', 'topP', 'topK', 'minP', 'repeatPenalty', 'presencePenalty',
+  'parallel', 'cacheTypeK', 'cacheTypeV', 'noOpOffload', 'metrics', 'noWebui', 'timeout',
+  // kvmem-llama.cpp 的分层 KV 内存开关
+  'kvmem',
+  // 手改过的启动命令（覆盖选项拼出来的命令行，见 models.js applyCmdOverride）
+  'cmdOverride',
   // 引擎与 NInfer 专属参数
   'engine', 'ninfer',
 ];
@@ -130,6 +142,53 @@ function sanitize(input, { keepId = null } = {}) {
   out.noMmprojOffload = !!out.noMmprojOffload;
   out.extraArgs = typeof out.extraArgs === 'string' ? out.extraArgs.trim().slice(0, 2000) : '';
 
+  // 可选启动开关：缺省一律视为「开」，与从前写死的命令行一致，
+  // 这样老配置文件读进来行为不变（真正的默认值见 models.js PARAM_DEFAULTS）
+  out.jinja = out.jinja === undefined ? true : !!out.jinja;
+  out.flashAttn = out.flashAttn === undefined ? true : !!out.flashAttn;
+  out.ctxShift = out.ctxShift === undefined ? true : !!out.ctxShift;
+  out.loadMode = ['mlock', 'mmap', 'none'].includes(out.loadMode) ? out.loadMode : 'mlock';
+
+  // 显存与卸载：gpuLayers 负数表示「不指定 -ngl」，交给 --fit 自动决定
+  out.gpuLayers = Number.isFinite(Number(out.gpuLayers)) ? Math.round(Number(out.gpuLayers)) : -1;
+  out.kvOffload = out.kvOffload === undefined ? true : !!out.kvOffload;
+  out.splitMode = ['none', 'layer', 'row'].includes(out.splitMode) ? out.splitMode : 'layer';
+
+  // 性能与批处理：线程 -1 = 自动（不写进命令行）
+  out.threads = Number.isFinite(Number(out.threads)) ? Math.round(Number(out.threads)) : -1;
+  out.threadsBatch = Number.isFinite(Number(out.threadsBatch)) ? Math.round(Number(out.threadsBatch)) : -1;
+  out.ubatch = posInt(out.ubatch, 512, 1, 8192);
+  out.batch = posInt(out.batch, 2048, 1, 65536);
+  out.fits = out.fits === undefined ? true : !!out.fits;
+
+  // 对话模板
+  out.chatTemplateFile = typeof out.chatTemplateFile === 'string'
+    ? out.chatTemplateFile.trim().slice(0, 500) : '';
+  out.reasoningFormat = ['auto', 'none', 'deepseek', 'deepseek-legacy'].includes(out.reasoningFormat)
+    ? out.reasoningFormat : 'auto';
+
+  // 采样：按字符串存，保住 0.0 / 1.0 的写法（见 models.js numOr）
+  out.temperature = numStr(out.temperature, '0.6');
+  out.topP = numStr(out.topP, '0.95');
+  out.topK = posInt(out.topK, 20, 0, 1000);
+  out.minP = numStr(out.minP, '0.0');
+  out.repeatPenalty = numStr(out.repeatPenalty, '1.0');
+  out.presencePenalty = numStr(out.presencePenalty, '0.0');
+
+  // 高级
+  out.parallel = posInt(out.parallel, 1, 1, 64);
+  out.cacheTypeK = cacheType(out.cacheTypeK, 'q8_0');
+  out.cacheTypeV = cacheType(out.cacheTypeV, 'q8_0');
+  out.noOpOffload = !!out.noOpOffload;
+  out.metrics = !!out.metrics;
+  out.noWebui = !!out.noWebui;
+  out.timeout = posInt(out.timeout, 0, 0, 86400);
+  out.kvmem = !!out.kvmem;
+
+  // 手改的启动命令：整行文本，长度上限防止误粘一大坨进来
+  out.cmdOverride = typeof out.cmdOverride === 'string'
+    ? out.cmdOverride.trim().slice(0, 4000) : '';
+
   // 引擎：老配置没有这个字段，一律按 llama.cpp 处理（向后兼容）
   out.engine = ENGINES.includes(out.engine) ? out.engine : 'llamacpp';
 
@@ -147,6 +206,27 @@ function sanitize(input, { keepId = null } = {}) {
   }
 
   return out;
+}
+
+/** 正整数归一：非法值/越界收敛到 [lo, hi] */
+function posInt(v, d, lo, hi) {
+  const x = Number(v);
+  if (!Number.isFinite(x)) return d;
+  return Math.max(lo, Math.min(hi, Math.round(x)));
+}
+
+/** 采样参数：存字符串，保住 0.0 / 1.0 这类小数位 */
+function numStr(v, d) {
+  if (v === undefined || v === null || v === '') return String(d);
+  const n = Number(v);
+  if (!Number.isFinite(n)) return String(d);
+  return String(v).trim();
+}
+
+/** KV 缓存精度白名单 */
+function cacheType(v, d) {
+  const ok = ['f32', 'f16', 'bf16', 'q8_0', 'q5_1', 'q5_0', 'q4_1', 'q4_0', 'iq4_nl'];
+  return ok.includes(v) ? v : d;
 }
 
 /** NInfer 参数归一：类型纠正 + 越界收敛 + 枚举校验 */

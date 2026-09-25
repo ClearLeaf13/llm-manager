@@ -8,7 +8,8 @@ const net = require('net');
 const http = require('http');
 const os = require('os');
 
-const { SERVER_EXE, MODELS_DIR, MODELS, buildArgs, resolveModels, detectLlamaDir } = require('./models');
+const models = require('./models');
+const { SERVER_EXE, MODELS_DIR, MODELS, buildArgs, applyCmdOverride, resolveModels, detectLlamaDir } = models;
 const store = require('./store');
 const scanner = require('./scanner');
 const trash = require('./trash');
@@ -449,20 +450,28 @@ async function startLlamaModel(model, ctxK) {
     ? Number(ctxK)
     : (Number(settings.defaultCtxK) || model.ctxK);
   const ctxTokens = Math.round(ctxKNum * 1024);
-  const args = buildArgs(model, ctxTokens);
+  let args = buildArgs(model, ctxTokens);
+
+  // 用户手改过启动命令就按他写的来（整体替换，受保护项除外）
+  const ov = applyCmdOverride(args, model.cmdOverride, serverExe);
+  args = ov.args;
+  const runExe = ov.exe;
 
   clearLogs();
   pushLog(`[启动] ${model.name}  —  ${ctxKNum}K 上下文 (${ctxTokens} tokens)`, 'sys');
   pushLog(`[引擎] llama.cpp`, 'sys');
-  pushLog(`[命令] ${formatCommand(serverExe, args)}`, 'sys');
+  if (ov.applied) {
+    pushLog(`[命令] 使用自定义启动命令（${ov.protectedKeys.join('/')} 仍由管理器接管）`, 'sys');
+  }
+  pushLog(`[命令] ${formatCommand(runExe, args)}`, 'sys');
 
   startingModel = model.id;
   currentModel = model;
   runningEngine = 'llamacpp';
 
   try {
-    child = spawn(serverExe, args, {
-      cwd: path.dirname(serverExe),
+    child = spawn(runExe, args, {
+      cwd: path.dirname(runExe),
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -578,8 +587,15 @@ async function startNinferModel(model, ctxK) {
   }
 
   const ctxKNum = Number(ctxK) > 0 ? Number(ctxK) : undefined;
-  const args = ninfer.buildArgs(model, ctxKNum);
-  const cmdStr = ninfer.formatCommand(cfg, model, args);
+  let args = ninfer.buildArgs(model, ctxKNum);
+
+  // 用户手改过启动命令就按他写的来。NInfer 走 wsl.exe，
+  // 受保护项是模型路径 / --port / --model-id（界面靠它们认进程、开 WebUI）。
+  const ov = applyCmdOverride(args, model.cmdOverride, cfg.servePath, NINFER_PROTECTED);
+  args = ov.args;
+  const servePath = ov.exe;
+
+  const cmdStr = ninfer.formatCommand(cfg, model, args, servePath);
 
   // 记录本次实际用的上下文（token 数）
   const usedCtx = (() => {
@@ -596,7 +612,8 @@ async function startNinferModel(model, ctxK) {
   currentModel = model;
   runningEngine = 'ninfer';
 
-  const wslArgs = ['-d', cfg.distro, '-u', 'root', '--', cfg.servePath, ...args];
+  // 用户在命令里换了可执行文件就按他换的起（servePath 来自 ov.exe）
+  const wslArgs = ['-d', cfg.distro, '-u', 'root', '--', servePath, ...args];
 
   try {
     child = spawn('wsl.exe', wslArgs, {
@@ -978,10 +995,38 @@ ipcMain.handle('models-list', () => modelsWithPaths().map((m) => ({
  *
  * 不启动进程，只按当前配置（含引擎专属参数）组装一遍，
  * 供「启动参数」模块显示。ctxK 不传时按启动逻辑取默认上下文。
+ *
+ * opts 是界面上「还没保存的改动」。用户在参数页勾一个开关，命令预览要立刻
+ * 反映出结果，所以这里允许用界面上的实时值覆盖已保存的配置 —— 预览回答的
+ * 是「照现在这样点保存，启动命令会变成什么」，而不是「库里现在存的是什么」。
+ * 只覆盖白名单字段，不能让渲染进程塞任意字段进命令行。
  */
-ipcMain.handle('model-args', (_e, id, ctxK) => {
-  const model = modelWithPath(id);
-  if (!model) return { ok: false, error: '模型不存在' };
+const PREVIEW_OVERRIDE_FIELDS = [
+  'jinja', 'flashAttn', 'ctxShift', 'useMtp', 'loadMode', 'noMmprojOffload', 'extraArgs',
+  // 手改过的命令：预览要能看到「改完保存后命令长什么样」
+  'cmdOverride',
+  // 本轮补全的可调项
+  'gpuLayers', 'kvOffload', 'splitMode', 'threads', 'threadsBatch', 'ubatch', 'batch', 'fits',
+  'chatTemplateFile', 'reasoningFormat',
+  'temperature', 'topP', 'topK', 'minP', 'repeatPenalty', 'presencePenalty',
+  'parallel', 'cacheTypeK', 'cacheTypeV', 'noOpOffload', 'metrics', 'noWebui', 'timeout',
+  // KVMem 开关
+  'kvmem',
+];
+
+function mergePreviewOverrides(model, opts) {
+  if (!opts || typeof opts !== 'object') return model;
+  const merged = { ...model };
+  for (const k of PREVIEW_OVERRIDE_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(opts, k)) merged[k] = opts[k];
+  }
+  return merged;
+}
+
+ipcMain.handle('model-args', (_e, id, ctxK, opts) => {
+  const found = modelWithPath(id);
+  if (!found) return { ok: false, error: '模型不存在' };
+  const model = mergePreviewOverrides(found, opts);
 
   const isNinfer = model.engine === 'ninfer';
 
@@ -993,22 +1038,28 @@ ipcMain.handle('model-args', (_e, id, ctxK) => {
       : (Number(settings.defaultCtxK) || model.ctxK);
 
     const args = ninfer.buildArgs(model, ctxNum);
+    // 手改过的命令同样要反映在预览里（受保护项与启动逻辑一致）
+    const ov = applyCmdOverride(args, model.cmdOverride, cfg.servePath, NINFER_PROTECTED);
     const tokens = (() => {
-      const i = args.indexOf('--max-context');
-      return i >= 0 ? Number(args[i + 1]) : 0;
+      const i = ov.args.indexOf('--max-context');
+      return i >= 0 ? Number(ov.args[i + 1]) : 0;
     })();
+    // 基准命令始终返回：界面拿它和命令框里的内容比对，判断是否算「自定义」
+    const baseCommand = ninfer.formatCommand(cfg, model, args, cfg.servePath);
     return {
       ok: true,
       engine: 'ninfer',
-      exe: cfg.servePath,
-      args,
-      command: ninfer.formatCommand(cfg, model, args),
+      exe: ov.exe,
+      args: ov.args,
+      command: ninfer.formatCommand(cfg, model, ov.args, ov.exe),
       ctxK: Math.round(tokens / 1024),
       ctxTokens: tokens,
       ninfer: model.ninfer || null,
       hasMmproj: false,
       running: !!currentModel && currentModel.id === id,
       wsl: cfg,
+      cmdOverridden: ov.applied,
+      baseCommand,
     };
   }
 
@@ -1020,12 +1071,19 @@ ipcMain.handle('model-args', (_e, id, ctxK) => {
   const args = buildArgs(model, ctxTokens);
   const serverExe = settings.serverExe || SERVER_EXE;
 
+  // 手改过的命令：预览显示改完的样子，同时给出未改动的基准命令供「重置」用
+  const ov = applyCmdOverride(args, model.cmdOverride, serverExe);
+
   return {
     ok: true,
     engine: 'llamacpp',
-    exe: serverExe,
-    args,
-    command: formatCommand(serverExe, args),
+    exe: ov.exe,
+    args: ov.args,
+    command: formatCommand(ov.exe, ov.args),
+    // 基准命令始终返回：界面拿它和命令框里的内容比对，判断是否算「自定义」
+    baseCommand: formatCommand(serverExe, args),
+    cmdOverridden: ov.applied,
+    protectedKeys: ov.protectedKeys,
     ctxK: ctxKNum,
     ctxTokens,
     // 让界面能标注哪些开关生效了
@@ -1148,6 +1206,69 @@ ipcMain.handle('models-update', (_e, id, patch) => {
   const res = store.update(id, patch || {});
   if (res.ok) broadcastStatus();
   return res;
+});
+
+/**
+ * 「恢复默认参数」用：返回该模型所在引擎的启动参数出厂值。
+ *
+ * 放在主进程算，避免界面里再抄一份默认值 —— 两处迟早会对不上。
+ */
+ipcMain.handle('model-defaults', (_e, id) => {
+  const m = store.find(id);
+  if (!m) return { ok: false, error: '模型不存在' };
+
+  const isNinfer = m.engine === 'ninfer';
+  const d = models.paramDefaults(m.engine);
+
+  if (isNinfer) {
+    // NInfer 的选项全在 ninfer 子对象里，上下文仍旧存顶层 ctxK
+    const { ctxK, ...nf } = d;
+    return { ok: true, engine: m.engine, ctxK, ninfer: nf };
+  }
+  return { ok: true, engine: m.engine, ...d };
+});
+
+/**
+ * 启动选项的分类表 —— 界面据此渲染「启动命令」下的折叠子菜单。
+ *
+ * 放在主进程是为了让「加一个参数」只改 models.js 一处：
+ * 界面不再硬编码有哪些分组、每组有哪些字段。
+ */
+ipcMain.handle('param-groups', (_e, engine) => ({
+  ok: true,
+  engine: engine === 'ninfer' ? 'ninfer' : 'llamacpp',
+  groups: models.paramGroups(engine),
+  defaults: models.paramDefaults(engine),
+}));
+
+/**
+ * 把用户手写的启动命令拆成参数数组，并标明哪些项被管理器接管。
+ *
+ * 命令框允许直接编辑，但 -m/--mmproj/--host/--port 这类项改了会
+ * 让模型起不来或让界面控件失灵，所以这里算出来告诉界面：
+ * 你写的哪些项不会生效（会被基准值覆盖）。
+ */
+ipcMain.handle('parse-command', (_e, text, engine) => {
+  const isNinfer = engine === 'ninfer';
+  const parsed = models.parseCommandLine(text);
+  const PROTECTED = isNinfer ? ninfer.NINFER_PROTECTED : ['-m', '--mmproj', '--host', '--port'];
+  const protSet = new Set(PROTECTED);
+
+  const hits = [];
+  for (const a of parsed.args) {
+    const eq = a.indexOf('=');
+    const name = a.startsWith('--') && eq > 0 ? a.slice(0, eq) : a;
+    if (protSet.has(name)) hits.push(name);
+  }
+
+  return {
+    ok: true,
+    exe: parsed.exe,
+    args: parsed.args,
+    argCount: parsed.args.length,
+    protectedHits: [...new Set(hits)],
+    protectedKeys: PROTECTED,
+  };
 });
 
 /** 删除模型（仅从列表移除，不动文件）—— 保留给单条删除用 */

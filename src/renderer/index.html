@@ -36,7 +36,7 @@
       <button class="rail-btn active" data-view="models" title="快速启用" aria-label="快速启用">
         <svg viewBox="0 0 20 20"><rect x="3" y="3" width="6.5" height="6.5" rx="1.6"/><rect x="10.5" y="3" width="6.5" height="6.5" rx="1.6"/><rect x="3" y="10.5" width="6.5" height="6.5" rx="1.6"/><rect x="10.5" y="10.5" width="6.5" height="6.5" rx="1.6"/></svg>
       </button>
-      <button class="rail-btn" data-view="manage" title="模型管理 / 启动参数 / 日志" aria-label="模型管理">
+      <button class="rail-btn" data-view="manage" title="模型管理 / 启动参数" aria-label="模型管理">
         <svg viewBox="0 0 20 20"><path d="M3 5.2h9M3 10h9M3 14.8h6"/><circle cx="15.4" cy="14.6" r="2.6"/><path d="M15.4 12.9v3.4M13.7 14.6h3.4"/></svg>
       </button>
     </div>
@@ -45,6 +45,9 @@
     <div class="rail-group rail-slot" id="rail-slot"></div>
 
     <div class="rail-group rail-bottom">
+      <button class="rail-btn" data-view="log" title="日志" aria-label="日志">
+        <svg viewBox="0 0 20 20"><path d="M4 3.6h12a1 1 0 0 1 1 1v10.8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4.6a1 1 0 0 1 1-1z"/><path d="M6 7.4h8M6 10.4h8M6 13.4h5"/></svg>
+      </button>
       <button class="rail-btn" id="rail-settings" title="设置" aria-label="设置">
         <svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="2.7"/><path d="M16.1 12.2a1.35 1.35 0 0 0 .27 1.49l.05.05a1.64 1.64 0 1 1-2.32 2.32l-.05-.05a1.35 1.35 0 0 0-1.49-.27 1.35 1.35 0 0 0-.82 1.24v.14a1.64 1.64 0 1 1-3.28 0v-.07a1.35 1.35 0 0 0-.88-1.24 1.35 1.35 0 0 0-1.49.27l-.05.05a1.64 1.64 0 1 1-2.32-2.32l.05-.05a1.35 1.35 0 0 0 .27-1.49 1.35 1.35 0 0 0-1.24-.82h-.14a1.64 1.64 0 1 1 0-3.28h.07a1.35 1.35 0 0 0 1.24-.88 1.35 1.35 0 0 0-.27-1.49l-.05-.05a1.64 1.64 0 1 1 2.32-2.32l.05.05a1.35 1.35 0 0 0 1.49.27h.06a1.35 1.35 0 0 0 .82-1.24v-.14a1.64 1.64 0 1 1 3.28 0v.07a1.35 1.35 0 0 0 .82 1.24 1.35 1.35 0 0 0 1.49-.27l.05-.05a1.64 1.64 0 1 1 2.32 2.32l-.05.05a1.35 1.35 0 0 0-.27 1.49v.06a1.35 1.35 0 0 0 1.24.82h.14a1.64 1.64 0 1 1 0 3.28h-.07a1.35 1.35 0 0 0-1.24.82z"/></svg>
       </button>
@@ -110,40 +113,66 @@
           <div class="scard-sub" id="st-pid-sub">PID —</div>
         </div>
 
+        <!-- 当前模型 + 推理引擎：合并成一张卡。
+             模型运行时在名字前面挂一个引擎标签（与「未启用」同款 pill） -->
         <div class="scard scard-wide">
           <div class="scard-label">当前模型</div>
-          <div class="scard-value scard-model" id="st-model">—</div>
+          <div class="scard-value scard-model">
+            <span class="pill engine" id="st-engine-pill" hidden></span>
+            <span id="st-model">—</span>
+          </div>
           <div class="scard-sub" id="st-model-sub"></div>
         </div>
 
-        <div class="scard scard-wide">
-          <div class="scard-label">推理引擎</div>
-          <div class="scard-value" id="st-engine">—</div>
-          <div class="scard-sub" id="st-engine-sub"></div>
-        </div>
+        <!-- 三个资源环：显存 / 内存 / 磁盘 -->
+        <div class="ringgrid">
+          <div class="scard rcard">
+            <div class="ring" id="ring-vram">
+              <svg viewBox="0 0 96 96" aria-hidden="true">
+                <circle class="ring-track" cx="48" cy="48" r="40" />
+                <circle class="ring-fill" cx="48" cy="48" r="40" id="st-vram-arc" />
+              </svg>
+              <div class="ring-mid">
+                <span class="ring-pct" id="st-vram-pct">—</span>
+              </div>
+            </div>
+            <div class="ring-label">显存</div>
+            <div class="ring-sub mono" id="st-vram">—</div>
+          </div>
 
-        <div class="scard">
-          <div class="scard-label">显存</div>
-          <div class="scard-value mono" id="st-vram">—</div>
-          <div class="sbar"><div class="sbar-fill" id="st-vram-bar"></div></div>
-        </div>
+          <div class="scard rcard">
+            <div class="ring" id="ring-mem">
+              <svg viewBox="0 0 96 96" aria-hidden="true">
+                <circle class="ring-track" cx="48" cy="48" r="40" />
+                <circle class="ring-fill" cx="48" cy="48" r="40" id="st-mem-arc" />
+              </svg>
+              <div class="ring-mid">
+                <span class="ring-pct" id="st-mem-pct">—</span>
+              </div>
+            </div>
+            <div class="ring-label">内存</div>
+            <div class="ring-sub mono" id="st-mem">—</div>
+          </div>
 
-        <div class="scard">
-          <div class="scard-label">内存</div>
-          <div class="scard-value mono" id="st-mem">—</div>
-          <div class="sbar"><div class="sbar-fill" id="st-mem-bar"></div></div>
-        </div>
-
-        <div class="scard">
-          <div class="scard-label">磁盘</div>
-          <div class="scard-value mono" id="st-disk">—</div>
-          <div class="sbar"><div class="sbar-fill" id="st-disk-bar"></div></div>
+          <div class="scard rcard">
+            <div class="ring" id="ring-disk">
+              <svg viewBox="0 0 96 96" aria-hidden="true">
+                <circle class="ring-track" cx="48" cy="48" r="40" />
+                <circle class="ring-fill" cx="48" cy="48" r="40" id="st-disk-arc" />
+              </svg>
+              <div class="ring-mid">
+                <span class="ring-pct" id="st-disk-pct">—</span>
+              </div>
+            </div>
+            <div class="ring-label">磁盘</div>
+            <div class="ring-sub mono" id="st-disk">—</div>
+          </div>
         </div>
 
         <div class="scard">
           <div class="scard-label">进程</div>
           <div class="scard-value mono" id="st-pid">—</div>
-          <div class="scard-sub">llama-server</div>
+          <div class="scard-sub" id="st-pid-engine">llama-server</div>
         </div>
       </div>
 
@@ -166,132 +195,442 @@
       <!-- 引擎徽标：一眼看出这个模型走哪条路径 -->
       <div class="engine-tag" id="p-engine-tag" hidden></div>
 
-      <!-- 上下文：这里是唯一可改的地方（首页卡片只读展示） -->
-      <div class="pgroup">
-        <div class="pgroup-title">上下文</div>
+      <!-- ================= 启动命令 =================
+           这是参数的唯一入口：命令本身可直接编辑，可调项作为「选项」
+           折叠在命令下面。以后加参数只需往这里加一个 pgroup，
+           不用再动页面结构。 -->
+      <div class="pgroup pgroup-cmd">
 
-        <div class="prow">
-          <label>上下文长度</label>
-          <div class="pinput">
-            <input type="number" id="p-ctx" min="1" max="1024" step="1" value="32" />
-            <span class="unit">K</span>
-            <span class="pinput-note" id="p-ctx-note"></span>
-          </div>
-          <div class="phint">
-            单位 K（1K = 1024 tokens）。改完点「保存参数」落盘，下次启动生效；模型运行中也能改
-          </div>
-        </div>
-      </div>
-
-      <!-- 参数开关 -->
-      <div class="pgroup">
-        <div class="pgroup-title">显存与卸载</div>
-
-        <div class="prow" id="p-row-nommproj">
-          <label class="chk">
-            <input type="checkbox" id="p-nommprojoffload" />
-            <span>--no-mmproj-offload</span>
-          </label>
-          <div class="phint" id="p-nommprojoffload-hint">
-            让视觉投影（mmproj）留在 CPU 内存，省约 1 GB 显存；仅多模态模型有效
-          </div>
-        </div>
-
-        <div class="prow">
-          <label>补充参数</label>
-          <textarea id="p-extraargs" rows="2" spellcheck="false"
-                    placeholder="例：--no-op-offload --chat-template-file &quot;C:/my dir/t.jinja&quot;"></textarea>
-          <div class="phint" id="p-extraargs-hint">
-            本版本未内置的参数都填这里，按空格拆分；含空格的用引号包起来
-          </div>
-        </div>
-
-        <div class="prow prow-actions">
-          <button class="mini primary" id="p-save">保存参数</button>
-          <span class="phint" id="p-status"></span>
-        </div>
-      </div>
-
-      <!-- NInfer 专属参数：只在 ninfer 引擎下显示 -->
-      <div class="pgroup" id="p-ninfer-group" hidden>
-        <div class="pgroup-title">NInfer 参数（WSL）</div>
-
-        <div class="prow2">
-          <div class="prow">
-            <label>KV 精度</label>
-            <select id="p-nf-kvdtype">
-              <option value="q4">q4（省显存，推荐）</option>
-              <option value="int8">int8</option>
-              <option value="bf16">bf16（最精确，最占显存）</option>
-            </select>
-          </div>
-          <div class="prow">
-            <label>投机解码</label>
-            <select id="p-nf-spec">
-              <option value="mtp">mtp</option>
-              <option value="dflash">dflash</option>
-              <option value="dflash2">dflash2</option>
-              <option value="">关闭</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="prow2">
-          <div class="prow">
-            <label>预填充块</label>
-            <input type="number" id="p-nf-prefill" min="64" max="8192" step="64" />
-          </div>
-          <div class="prow">
-            <label>草稿 token</label>
-            <input type="number" id="p-nf-draft" min="1" max="16" step="1" />
-          </div>
-        </div>
-
-        <div class="prow2">
-          <div class="prow">
-            <label>思考预算</label>
-            <input type="number" id="p-nf-thinking" min="0" max="131072" step="256" />
-          </div>
-          <div class="prow">
-            <label>视觉 token 上限</label>
-            <input type="number" id="p-nf-visiontokens" min="0" max="32768" step="256" />
-          </div>
-        </div>
-
-        <div class="prow">
-          <div class="pchecks">
-            <label class="chk"><input type="checkbox" id="p-nf-vision" /> 视觉 --vision</label>
-            <label class="chk"><input type="checkbox" id="p-nf-embedding" /> --embedding-host</label>
-            <label class="chk"><input type="checkbox" id="p-nf-nocudagraph" /> --no-cuda-graph</label>
-          </div>
-          <div class="phint">
-            这些是 NInfer 独有的参数，保存后下次启动生效
-          </div>
-        </div>
-      </div>
-
-      <!-- 组装后的启动命令 -->
-      <div class="pgroup">
-        <div class="pgroup-title">
-          启动命令
+        <!-- 启动命令：可以直接改。改了就整体覆盖，不再由下面的选项决定 -->
+        <div class="pcmd-head">
+          <span class="pcmd-title">启动命令</span>
+          <span class="pcmd-flag" id="p-cmd-flag" hidden>已自定义</span>
+          <button class="ghost tiny" id="p-cmd-regen" hidden title="丢弃手改，回到按下面选项拼出来的命令">
+            重新生成
+          </button>
           <button class="ghost tiny" id="p-copy">复制</button>
         </div>
-        <pre class="pcmd" id="p-cmd">（选择一个模型后显示）</pre>
+        <textarea class="pcmd-edit" id="p-cmd" rows="3" spellcheck="false"
+                  placeholder="（选择一个模型后显示）"></textarea>
         <div class="phint" id="p-cmd-meta"></div>
+        <div class="phint" id="p-cmd-warn" hidden></div>
+
+        <!-- 选项区：按类别折叠。改选项会重算命令；一旦手改过命令，
+             选项就只作参考，改选项不再覆盖手写的命令 -->
+        <div class="poptions">
+
+          <!-- ① 上下文：这里是唯一可改的地方（首页卡片只读展示） -->
+          <details class="popt" id="popt-ctx" open>
+            <summary class="popt-head">
+              <span class="popt-caret"></span>
+              <span class="popt-name">上下文</span>
+              <span class="popt-val" id="popt-ctx-val"></span>
+            </summary>
+            <div class="popt-body">
+              <div class="prow">
+                <label>上下文长度</label>
+                <div class="pinput">
+                  <input type="number" id="p-ctx" min="1" max="1024" step="1" value="32" />
+                  <span class="unit">K</span>
+                  <span class="pinput-note" id="p-ctx-note"></span>
+                </div>
+                <div class="phint">
+                  单位 K（1K = 1024 tokens）。改完点「保存参数」落盘，下次启动生效；模型运行中也能改
+                </div>
+              </div>
+            </div>
+          </details>
+
+          <!-- ② 显存与卸载 -->
+          <details class="popt" id="popt-mem" open>
+            <summary class="popt-head">
+              <span class="popt-caret"></span>
+              <span class="popt-name">显存与卸载</span>
+              <span class="popt-val" id="popt-mem-val"></span>
+            </summary>
+            <div class="popt-body">
+              <div class="prow2">
+                <div class="prow">
+                  <label>显存层数</label>
+                  <div class="pinput">
+                    <input type="number" id="p-ngl" min="-1" max="999" step="1" />
+                    <span class="pinput-note">-1 = 交给 --fit 自动</span>
+                  </div>
+                </div>
+                <div class="prow">
+                  <label>多卡切分</label>
+                  <select id="p-splitmode">
+                    <option value="layer">layer（按层切，推荐）</option>
+                    <option value="row">row（按行切）</option>
+                    <option value="none">none（单卡）</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="prow" id="p-row-nommproj">
+                <label class="chk">
+                  <input type="checkbox" id="p-nommprojoffload" />
+                  <span>--no-mmproj-offload</span>
+                </label>
+                <div class="phint" id="p-nommprojoffload-hint">
+                  让视觉投影（mmproj）留在 CPU 内存，省约 1 GB 显存；仅多模态模型有效
+                </div>
+              </div>
+
+              <div class="prow">
+                <label class="chk">
+                  <input type="checkbox" id="p-kvoffload" />
+                  <span>--no-kv-offload</span>
+                </label>
+                <div class="phint">
+                  勾选 = KV 缓存不放进显存（省显存，明显降速）。不勾是默认行为
+                </div>
+              </div>
+
+              <div class="prow">
+                <label>权重加载方式</label>
+                <select id="p-loadmode">
+                  <option value="mlock">mlock（常驻物理内存，推荐）</option>
+                  <option value="mmap">mmap（按需映射，省内存）</option>
+                  <option value="none">不指定 --load-mode</option>
+                </select>
+                <div class="phint">
+                  mlock 把权重锁进内存，速度最稳；显存/内存吃紧时可换 mmap
+                </div>
+              </div>
+            </div>
+          </details>
+
+          <!-- ③ 性能与批处理 -->
+          <details class="popt" id="popt-perf">
+            <summary class="popt-head">
+              <span class="popt-caret"></span>
+              <span class="popt-name">性能与批处理</span>
+              <span class="popt-val" id="popt-perf-val"></span>
+            </summary>
+            <div class="popt-body">
+              <div class="prow2">
+                <div class="prow">
+                  <label>生成线程</label>
+                  <div class="pinput">
+                    <input type="number" id="p-threads" min="-1" max="256" step="1" />
+                    <span class="pinput-note">-1 = 自动</span>
+                  </div>
+                </div>
+                <div class="prow">
+                  <label>预处理线程</label>
+                  <div class="pinput">
+                    <input type="number" id="p-threadsbatch" min="-1" max="256" step="1" />
+                    <span class="pinput-note">-1 = 同生成</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="prow2">
+                <div class="prow">
+                  <label>逻辑批大小 (-b)</label>
+                  <input type="number" id="p-batch" min="1" max="65536" step="1" />
+                </div>
+                <div class="prow">
+                  <label>物理批大小 (-ub)</label>
+                  <input type="number" id="p-ubatch" min="1" max="8192" step="1" />
+                </div>
+              </div>
+
+              <div class="prow">
+                <label class="chk">
+                  <input type="checkbox" id="p-fits" />
+                  <span>--fit on（按显存自动调整）</span>
+                </label>
+                <div class="phint">
+                  开着时 llama.cpp 会自动下调没显式设置的参数以塞进显存；关掉则完全按你填的值来
+                </div>
+              </div>
+            </div>
+          </details>
+
+          <!-- ④ 对话模板 -->
+          <details class="popt" id="popt-tpl">
+            <summary class="popt-head">
+              <span class="popt-caret"></span>
+              <span class="popt-name">对话模板</span>
+              <span class="popt-val" id="popt-tpl-val"></span>
+            </summary>
+            <div class="popt-body">
+              <div class="prow">
+                <label class="chk">
+                  <input type="checkbox" id="p-jinja" />
+                  <span>--jinja（用模型自带模板）</span>
+                </label>
+              </div>
+              <div class="prow">
+                <label>自定义模板文件</label>
+                <input type="text" id="p-chattpl" spellcheck="false"
+                       placeholder="留空 = 用模型内置模板；例 C:\my dir\t.jinja" />
+                <div class="phint">
+                  填了就加 --chat-template-file；含空格也无需加引号
+                </div>
+              </div>
+              <div class="prow">
+                <label>思考内容处理</label>
+                <select id="p-reasoningfmt">
+                  <option value="auto">auto（交给模板决定，推荐）</option>
+                  <option value="none">none（不解析 think 标签）</option>
+                  <option value="deepseek">deepseek</option>
+                  <option value="deepseek-legacy">deepseek-legacy</option>
+                </select>
+              </div>
+            </div>
+          </details>
+
+          <!-- ⑤ 采样 -->
+          <details class="popt" id="popt-sample">
+            <summary class="popt-head">
+              <span class="popt-caret"></span>
+              <span class="popt-name">采样</span>
+              <span class="popt-val" id="popt-sample-val"></span>
+            </summary>
+            <div class="popt-body">
+              <div class="prow2">
+                <div class="prow">
+                  <label>温度 --temp</label>
+                  <input type="text" id="p-temp" spellcheck="false" />
+                </div>
+                <div class="prow">
+                  <label>--top-p</label>
+                  <input type="text" id="p-topp" spellcheck="false" />
+                </div>
+              </div>
+              <div class="prow2">
+                <div class="prow">
+                  <label>--top-k</label>
+                  <input type="number" id="p-topk" min="0" max="1000" step="1" />
+                </div>
+                <div class="prow">
+                  <label>--min-p</label>
+                  <input type="text" id="p-minp" spellcheck="false" />
+                </div>
+              </div>
+              <div class="prow2">
+                <div class="prow">
+                  <label>--repeat-penalty</label>
+                  <input type="text" id="p-repeatpenalty" spellcheck="false" />
+                </div>
+                <div class="prow">
+                  <label>--presence-penalty</label>
+                  <input type="text" id="p-presencepenalty" spellcheck="false" />
+                </div>
+              </div>
+              <div class="phint">
+                数值可写 0.0 / 1.0 这种小数位，会原样出现在命令里
+              </div>
+            </div>
+          </details>
+
+          <!-- ⑥ 高级 -->
+          <details class="popt" id="popt-adv">
+            <summary class="popt-head">
+              <span class="popt-caret"></span>
+              <span class="popt-name">高级</span>
+              <span class="popt-val" id="popt-adv-val"></span>
+            </summary>
+            <div class="popt-body">
+              <div class="prow">
+                <div class="pchecks">
+                  <label class="chk">
+                    <input type="checkbox" id="p-ctxshift" />
+                    <span>--context-shift</span>
+                  </label>
+                  <label class="chk">
+                    <input type="checkbox" id="p-flashattn" />
+                    <span>-fa on</span>
+                  </label>
+                  <label class="chk">
+                    <input type="checkbox" id="p-usemtp" />
+                    <span>--spec-type draft-mtp</span>
+                  </label>
+                  <label class="chk">
+                    <input type="checkbox" id="p-noopoffload" />
+                    <span>--no-op-offload</span>
+                  </label>
+                  <label class="chk">
+                    <input type="checkbox" id="p-metrics" />
+                    <span>--metrics</span>
+                  </label>
+                  <label class="chk">
+                    <input type="checkbox" id="p-nowebui" />
+                    <span>--no-webui</span>
+                  </label>
+                </div>
+                <div class="phint">
+                  context-shift 在超长对话时滚动窗口；flash attention 省显存提速；
+                  draft-mtp 是 MTP 投机解码，仅支持的模型有效
+                </div>
+              </div>
+
+              <div class="prow2">
+                <div class="prow">
+                  <label>并发槽位 -np</label>
+                  <input type="number" id="p-parallel" min="1" max="64" step="1" />
+                </div>
+                <div class="prow">
+                  <label>服务超时 -to（秒）</label>
+                  <div class="pinput">
+                    <input type="number" id="p-timeout" min="0" max="86400" step="60" />
+                    <span class="pinput-note">0 = 用默认</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="prow2">
+                <div class="prow">
+                  <label>KV 精度 K (-ctk)</label>
+                  <select id="p-ctk">
+                    <option value="q8_0">q8_0（推荐）</option>
+                    <option value="q4_0">q4_0（更省）</option>
+                    <option value="q5_1">q5_1</option>
+                    <option value="q5_0">q5_0</option>
+                    <option value="q4_1">q4_1</option>
+                    <option value="iq4_nl">iq4_nl</option>
+                    <option value="bf16">bf16</option>
+                    <option value="f16">f16（最占显存）</option>
+                    <option value="f32">f32</option>
+                  </select>
+                </div>
+                <div class="prow">
+                  <label>KV 精度 V (-ctv)</label>
+                  <select id="p-ctv">
+                    <option value="q8_0">q8_0（推荐）</option>
+                    <option value="q4_0">q4_0（更省）</option>
+                    <option value="q5_1">q5_1</option>
+                    <option value="q5_0">q5_0</option>
+                    <option value="q4_1">q4_1</option>
+                    <option value="iq4_nl">iq4_nl</option>
+                    <option value="bf16">bf16</option>
+                    <option value="f16">f16（最占显存）</option>
+                    <option value="f32">f32</option>
+                  </select>
+                </div>
+              </div>
+              <div class="phint">
+                显存不够时把 K/V 降到 q4_0 最有效；精度越低长上下文越容易失真
+              </div>
+            </div>
+          </details>
+
+          <!-- ⑦ NInfer 专属参数：只在 ninfer 引擎下显示 -->
+          <details class="popt" id="popt-ninfer" hidden>
+            <summary class="popt-head">
+              <span class="popt-caret"></span>
+              <span class="popt-name">NInfer 参数（WSL）</span>
+              <span class="popt-val" id="popt-ninfer-val"></span>
+            </summary>
+            <div class="popt-body">
+              <div class="prow2">
+                <div class="prow">
+                  <label>KV 精度</label>
+                  <select id="p-nf-kvdtype">
+                    <option value="q4">q4（省显存，推荐）</option>
+                    <option value="int8">int8</option>
+                    <option value="bf16">bf16（最精确，最占显存）</option>
+                  </select>
+                </div>
+                <div class="prow">
+                  <label>投机解码</label>
+                  <select id="p-nf-spec">
+                    <option value="mtp">mtp</option>
+                    <option value="dflash">dflash</option>
+                    <option value="dflash2">dflash2</option>
+                    <option value="">关闭</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="prow2">
+                <div class="prow">
+                  <label>预填充块</label>
+                  <input type="number" id="p-nf-prefill" min="64" max="8192" step="64" />
+                </div>
+                <div class="prow">
+                  <label>草稿 token</label>
+                  <input type="number" id="p-nf-draft" min="1" max="16" step="1" />
+                </div>
+              </div>
+
+              <div class="prow2">
+                <div class="prow">
+                  <label>思考预算</label>
+                  <input type="number" id="p-nf-thinking" min="0" max="131072" step="256" />
+                </div>
+                <div class="prow">
+                  <label>视觉 token 上限</label>
+                  <input type="number" id="p-nf-visiontokens" min="0" max="32768" step="256" />
+                </div>
+              </div>
+
+              <div class="prow">
+                <div class="pchecks">
+                  <label class="chk"><input type="checkbox" id="p-nf-vision" /> 视觉 --vision</label>
+                  <label class="chk"><input type="checkbox" id="p-nf-embedding" /> --embedding-host</label>
+                  <label class="chk"><input type="checkbox" id="p-nf-nocudagraph" /> --no-cuda-graph</label>
+                </div>
+                <div class="phint">
+                  这些是 NInfer 独有的参数，保存后下次启动生效
+                </div>
+              </div>
+            </div>
+          </details>
+
+        </div>
+
+        <!-- 操作条：固定在菜单最下方，保存按钮靠右下角 -->
+        <div class="pactions">
+          <span class="phint" id="p-status"></span>
+          <div class="pactions-btns">
+            <button class="mini" id="p-restore" title="把所有启动参数恢复成出厂默认值">
+              恢复默认参数
+            </button>
+            <button class="mini primary" id="p-save">保存参数</button>
+          </div>
+        </div>
+
       </div>
 
-      <!-- 日志（原第三页，合并到这里） -->
-      <div class="pgroup pgroup-log">
-        <div class="pgroup-title">
-          日志
-          <span class="log-actions">
-            <button class="ghost tiny" id="btn-autoscroll">自动滚动：开</button>
-            <button class="ghost tiny" id="btn-clear">清空</button>
-          </span>
+      <!-- ================= KVMem =================
+           kvmem-llama.cpp 的 KV 分层内存。只做开关，参数由对方默认值决定。
+           项目地址固定在卡片最底部居中。 -->
+      <div class="pgroup pgroup-kvmem" id="pgroup-kvmem">
+        <div class="pgroup-title">KVMem</div>
+        <div class="kvmem-body">
+          <div class="prow">
+            <label class="chk">
+              <input type="checkbox" id="p-kvmem" />
+              开启 KVMem（分层 KV 内存）
+            </label>
+            <div class="phint" id="p-kvmem-hint">
+              把 KV 缓存放到主机内存并按查询取回，让长上下文在有限显存上跑得动。
+              需要配套的 llama-kvmem-server 可执行文件，普通 llama-server 不认这个开关。
+            </div>
+          </div>
         </div>
-        <div class="log-wrap" id="log-wrap">
-          <div id="log" class="log"></div>
-        </div>
+        <a class="kvmem-link" href="https://github.com/kvmem/kvmem-llama.cpp"
+           id="p-kvmem-link">https://github.com/kvmem/kvmem-llama.cpp</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ---- 第三页：日志 ---- -->
+  <section class="pane content-pane hidden" id="pane-log">
+    <div class="pane-head">
+      <h1>日志</h1>
+      <span class="log-actions">
+        <button class="ghost tiny" id="btn-autoscroll">自动滚动：开</button>
+        <button class="ghost tiny" id="btn-clear">清空</button>
+      </span>
+    </div>
+    <div class="content-body log-body">
+      <div class="log-wrap" id="log-wrap">
+        <div id="log" class="log"></div>
       </div>
     </div>
   </section>

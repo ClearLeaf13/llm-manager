@@ -24,7 +24,13 @@ contextBridge.exposeInMainWorld('api', {
   modelsDeleteBatch: (ids, withFiles) => ipcRenderer.invoke('models-delete-batch', ids, withFiles),
   modelsReset: () => ipcRenderer.invoke('models-reset'),
   modelsNextPort: () => ipcRenderer.invoke('models-next-port'),
-  modelsArgs: (id, ctxK) => ipcRenderer.invoke('model-args', id, ctxK),
+  // opts：界面上尚未保存的启动选项，用于让命令预览实时反映改动
+  modelsArgs: (id, ctxK, opts) => ipcRenderer.invoke('model-args', id, ctxK, opts),
+  modelDefaults: (id) => ipcRenderer.invoke('model-defaults', id),
+  // 启动选项的分类表（界面据此渲染可折叠子菜单，加参数只改主进程一处）
+  paramGroups: (engine) => ipcRenderer.invoke('param-groups', engine),
+  // 把整条启动命令拆成参数数组（编辑命令后用来做差异分析）
+  parseCommand: (text, engine) => ipcRenderer.invoke('parse-command', text, engine),
 
   // NInfer（WSL 里的第二引擎）
   ninferProbe: () => ipcRenderer.invoke('ninfer-probe'),

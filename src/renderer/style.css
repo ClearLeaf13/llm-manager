@@ -297,6 +297,119 @@ body {
 .scard .pill.load { color: var(--warn); background: var(--warn-soft); }
 .scard .pill.idle { color: var(--text-faint); background: var(--bg-sunken); }
 
+/* 引擎标签：运行时挂在模型名前面，与「未启用」标签同款同色 */
+.scard .pill.engine {
+  font-size: 11.5px;
+  padding: 2px 9px;
+  border-radius: 7px;
+  margin-right: 8px;
+  vertical-align: 2px;
+  color: var(--text-dim);
+  background: var(--bg-sunken);
+}
+.scard .pill.engine::before { display: none; }
+.scard .pill.engine[data-engine="llamacpp"] { color: var(--ok); background: var(--ok-soft); }
+.scard .pill.engine[data-engine="ninfer"] { color: var(--nf); background: var(--nf-soft); }
+
+/* ---------------- 资源环：显存 / 内存 / 磁盘 ---------------- */
+
+.ringgrid {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 11px;
+}
+
+.rcard {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px 12px 14px;
+}
+
+.ring {
+  position: relative;
+  width: 96px;
+  height: 96px;
+  flex: 0 0 auto;
+}
+.ring svg {
+  width: 100%;
+  height: 100%;
+  /* 从 12 点方向顺时针画，和 Zen 的仪表盘一致 */
+  transform: rotate(-90deg);
+}
+
+.ring-track {
+  fill: none;
+  stroke: var(--bg-sunken);
+  stroke-width: 8;
+}
+
+.ring-fill {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 8;
+  stroke-linecap: round;
+  /* 2πr = 2π×40 ≈ 251.33 */
+  stroke-dasharray: 251.33;
+  stroke-dashoffset: 251.33;
+  transition: stroke-dashoffset .5s cubic-bezier(.4, 0, .2, 1), stroke .3s ease;
+}
+.ring-fill.warn { stroke: var(--warn); }
+.ring-fill.err { stroke: var(--err); }
+
+.ring-mid {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ring-pct {
+  font-family: var(--mono);
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -.5px;
+  color: var(--text);
+}
+
+.ring-label {
+  margin-top: 10px;
+  font-size: 11px;
+  font-weight: 560;
+  letter-spacing: .3px;
+  color: var(--text-faint);
+}
+
+.ring-sub {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--text-dim);
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+/* ---------------- KVMem 卡片 ---------------- */
+
+.pgroup-kvmem { position: relative; }
+
+.kvmem-body { padding: 2px 0 4px; }
+
+.kvmem-link {
+  display: block;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  text-align: center;
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--text-faint);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.kvmem-link:hover { color: var(--accent); text-decoration: underline; }
+
 /* 快捷操作 */
 .sactions { display: flex; gap: 8px; flex-wrap: wrap; }
 .sactions .mini { margin-left: 0; }
@@ -345,6 +458,24 @@ body {
 }
 
 .pgroup-title .log-actions { display: inline-flex; gap: 6px; }
+
+/* ---------------- 日志页（第三页） ---------------- */
+
+/* 日志页自己就是整页，撑满高度而不是固定 260px */
+.log-body {
+  display: flex;
+  flex-direction: column;
+  padding: 0 18px 14px;
+}
+.log-body .log-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-sunken);
+  overflow: hidden;
+}
+.pane-head .log-actions { display: inline-flex; gap: 6px; }
 
 /* 设置里的 NInfer 状态行 */
 .sgroup-badge {
@@ -662,14 +793,44 @@ details.plog[open] > summary.pgroup-title { margin-bottom: 10px; }
 }
 #p-extraargs:focus { border-color: var(--accent); }
 
-/* 组装后的启动命令 */
-.pcmd {
+/* 启动命令：可直接编辑的文本框。
+   之所以用 textarea 而不是 <pre>，是因为这一栏要能改 —— 用户手改的
+   整条命令会覆盖按选项拼出来的命令行。 */
+.pcmd-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+.pcmd-title { font-size: 11.5px; font-weight: 560; color: var(--text-dim); }
+
+/* 「已自定义」小标：提醒当前命令不是选项拼出来的 */
+.pcmd-flag {
+  font-size: 10px;
+  font-weight: 560;
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: var(--warn);
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-soft);
+}
+.pcmd-flag[hidden] { display: none; }
+
+/* 「重新生成」靠右，复制按钮跟在它后面 */
+.pcmd-head #p-cmd-regen { margin-left: auto; }
+.pcmd-head #p-cmd-regen[hidden] { display: none; }
+
+.pcmd,
+.pcmd-edit {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
   margin: 0;
   padding: 9px 11px;
   font-family: var(--mono);
   font-size: 11.5px;
   line-height: 1.62;
-  color: var(--text-dim);
+  color: var(--text);
   background: var(--bg-sunken);
   border: 1px solid var(--border);
   border-radius: 7px;
@@ -678,6 +839,104 @@ details.plog[open] > summary.pgroup-title { margin-bottom: 10px; }
   user-select: text;
   max-height: 210px;
   overflow-y: auto;
+  transition: border-color .15s ease;
+}
+
+/* 可编辑态：明显区分于只读展示，聚焦时给强调色 */
+.pcmd-edit {
+  resize: vertical;
+  min-height: 62px;
+}
+.pcmd-edit:hover { border-color: var(--border-strong, var(--border)); }
+.pcmd-edit:focus { border-color: var(--accent); }
+/* 手改后（JS 打上 .custom）用警示色描边，一眼看出这条命令是自定义的 */
+.pcmd-edit.custom {
+  border-color: var(--warn);
+  background: var(--warn-soft);
+}
+
+/* ------------------------------------------------------------------ *
+   启动命令里的「选项」区
+   可折叠子菜单：收起时只留一行标题 + 当前值摘要，展开才显示输入框。
+   以后加参数只要再放一个 .popt，不用改页面其它地方。
+ * ------------------------------------------------------------------ */
+
+.pgroup-cmd { padding-bottom: 0; }        /* 底部操作条自带内边距 */
+
+.poptions {
+  margin: 12px 0 0;
+  border-top: 1px solid var(--border);
+}
+
+.popt { border-bottom: 1px solid var(--border); }
+
+.popt > summary.popt-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 2px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  user-select: none;
+}
+.popt > summary.popt-head::-webkit-details-marker { display: none; }
+.popt > summary.popt-head:hover { color: var(--text); }
+.popt[hidden] { display: none; }
+
+.popt-name { font-weight: 560; }
+
+/* 收起时右侧显示当前值，不用展开也能一眼看到配了什么 */
+.popt-val {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 55%;
+}
+
+/* 三角箭头：收起朝右，展开朝下 */
+.popt-caret {
+  flex: 0 0 auto;
+  width: 0; height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid currentColor;
+  opacity: .65;
+  transition: transform .16s ease;
+}
+.popt[open] > .popt-head .popt-caret { transform: rotate(90deg); }
+
+.popt-body { padding: 2px 2px 12px; }
+
+/* 命令手改后，选项区整体变暗：改选项不再影响命令，只是参考 */
+.poptions.locked .popt > summary.popt-head { opacity: .62; }
+.poptions.locked .popt-body { opacity: .72; }
+
+/* 复选开关横排 */
+.pchecks { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+
+/* 底部操作条：提示靠左，按钮靠右下角 */
+.pactions {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 0 12px;
+  background: var(--bg-elev, var(--bg));
+  border-top: 1px solid var(--border);
+}
+.pactions-btns {
+  margin-left: auto;
+  display: flex;
+  gap: 7px;
+  flex: 0 0 auto;
 }
 
 .plog-actions { justify-content: flex-end; margin-bottom: 8px; }

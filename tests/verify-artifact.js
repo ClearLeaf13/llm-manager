@@ -31,6 +31,7 @@ const hj = rd('src/renderer/index.html');
 const rj = rd('src/renderer/renderer.js');
 const sj = rd('src/store.js');
 const aj = rd('src/api-server.js');
+const xj = rd('src/models.js');
 const pj = JSON.parse(rd('package.json'));
 
 let pass = 0, fail = 0;
@@ -74,10 +75,34 @@ chk(/engine/.test(aj), 'API 暴露 engine 字段');
 chk(/ninferPids/.test(aj), 'API 用 ninferPids 判断运行状态');
 
 console.log('--- renderer/index.html ---');
-chk(!/pane-log/.test(hj), '第三页 pane-log 已删除');
-chk(!/data-view="log"/.test(hj), '侧栏没有「日志」入口');
-chk(/id="st-engine"/.test(hj), '存在推理引擎卡');
-chk(/id="p-ninfer-group"/.test(hj), '存在 NInfer 参数分组');
+chk(/id="pane-log"/.test(hj), '第三页日志页存在');
+chk(/data-view="log"/.test(hj), '侧栏有「日志」入口（设置按钮上方）');
+chk(!/id="st-engine"/.test(hj) && !/id="st-engine-sub"/.test(hj),
+    '独立的「推理引擎」卡已合并进当前模型卡');
+chk(/id="st-engine-pill"/.test(hj), '当前模型名前有引擎标签');
+chk(/id="st-vram-arc"/.test(hj) && /id="st-mem-arc"/.test(hj)
+    && /id="st-disk-arc"/.test(hj), '显存/内存/磁盘改为 SVG 圆环');
+chk(!/st-vram-bar|st-mem-bar|st-disk-bar/.test(hj), '旧的条形进度条已移除');
+chk(/id="pgroup-kvmem"/.test(hj), 'KVMem 卡片（原日志位置，启动命令下方）');
+chk(/id="p-kvmem"/.test(hj), 'KVMem 开启/关闭开关');
+chk(/href="https:\/\/github\.com\/kvmem\/kvmem-llama\.cpp"/.test(hj),
+    'KVMem 卡片底部有项目地址链接');
+chk(/class="kvmem-link"/.test(hj), '项目地址链接用居中样式');
+chk(!/id="p-ninfer-group"/.test(hj), '旧的平级 NInfer 分组已并入启动命令子菜单');
+chk(/id="popt-mem"/.test(hj), '显存与卸载是启动命令下的折叠子菜单');
+chk(/id="popt-ctx"/.test(hj) && /id="popt-adv"/.test(hj), '上下文 / 高级选项子菜单');
+chk(/id="popt-perf"/.test(hj) && /id="popt-tpl"/.test(hj) && /id="popt-sample"/.test(hj),
+    '性能与批处理 / 对话模板 / 采样 子菜单');
+chk(!/id="popt-extra"/.test(hj) && !/id="p-extraargs"/.test(hj),
+    '「补充参数」整栏已删除（并入可编辑的启动命令）');
+chk(/<textarea[^>]*id="p-cmd"/.test(hj), '启动命令框是可编辑的 textarea');
+chk(/id="p-cmd-regen"/.test(hj) && /id="p-cmd-flag"/.test(hj),
+    '命令框带「重新生成」与「已自定义」标记');
+chk(/id="p-restore"/.test(hj), '存在「恢复默认参数」按钮');
+chk(/id="p-jinja"/.test(hj) && /id="p-loadmode"/.test(hj), '存在可改的启动开关');
+chk(/id="p-ngl"/.test(hj) && /id="p-temp"/.test(hj) && /id="p-topk"/.test(hj)
+    && /id="p-ctk"/.test(hj) && /id="p-splitmode"/.test(hj),
+    '补全的选项控件（GPU 层数 / 采样 / KV 类型 / 切分模式）');
 chk(/id="set-nf-distro"/.test(hj), '设置里有 NInfer 发行版');
 chk(/id="f-engine"/.test(hj), '弹窗有引擎选择');
 chk(/本地 ?LLM ?聚合管理/.test(hj), '应用名已改');
@@ -88,7 +113,15 @@ chk(/本地 ?LLM ?聚合管理/.test(hj), '应用名已改');
 }
 
 console.log('--- renderer/renderer.js ---');
-chk(/function renderEngineCard/.test(rj), 'renderEngineCard');
+chk(!/function renderEngineCard/.test(rj), '独立引擎卡的渲染已删除（并入当前模型卡）');
+chk(/st-engine-pill/.test(rj), 'renderer 写模型名前的引擎标签');
+chk(/function engineInUse/.test(rj), 'engineInUse（按实际在跑的进程判断引擎）');
+chk(/function engineLabel/.test(rj), 'engineLabel（引擎显示名）');
+chk(/st-pid-engine/.test(rj), 'PID 行也按引擎切显示名');
+chk(/function setRing/.test(rj) && /RING_CIRC/.test(rj), '圆环进度：setRing + 周长常量');
+chk(!/function setBar/.test(rj), '旧的条形进度条渲染函数已删除');
+chk(/setAttribute\('class'/.test(rj), 'SVG 圆环用 setAttribute 改 class（SVG className 只读）');
+chk(/pane-log/.test(rj) && /scrollLogToEnd/.test(rj), '日志页切换与自动滚动');
 chk(/function setSplitTarget/.test(rj), 'setSplitTarget（拖动条修复）');
 chk(/function loadNinferStatus/.test(rj), 'loadNinferStatus');
 chk(/function collectNinferFields/.test(rj), 'collectNinferFields');
@@ -109,9 +142,41 @@ chk(/ninferVisionOf/.test(mj), 'main.js 按 ninfer.vision 报视觉状态');
 chk(!/vision: false, engine: 'ninfer'/.test(mj), '不再把 NInfer 的 vision 写死为 false');
 chk(/out\.vision = out\.ninfer\.vision/.test(sj), 'store 强制同步两处 vision 字段');
 chk(/ninfer-serve PID/.test(rj), 'PID 行按引擎显示进程名');
+chk(/function restoreDefaults/.test(rj), 'restoreDefaults（恢复默认参数）');
+chk(/function updateOptSummaries/.test(rj), 'updateOptSummaries（折叠子菜单摘要）');
+chk(/function previewOptsOf/.test(rj), 'previewOptsOf（未保存改动也进命令预览）');
+chk(/PARAM_DEFAULTS/.test(xj), 'models.js 有启动选项默认值表');
+chk(/function paramDefaults/.test(xj), 'paramDefaults 按引擎给默认值');
+chk(/model-defaults/.test(mj) && /'model-defaults'/.test(mj), 'IPC model-defaults 在 main.js 里注册并处理');
+chk(/'jinja', 'flashAttn', 'ctxShift', 'loadMode'/.test(sj), 'store 白名单含新启动开关');
+chk(/kvmem/.test(sj), 'store 白名单含 kvmem');
+chk(/kvmem: false/.test(xj), 'PARAM_DEFAULTS 里 kvmem 默认关');
+chk(/'--kvmem'/.test(xj), 'models.js 会按开关追加 --kvmem');
+chk(/name: 'KVMem'/.test(xj), 'PARAM_GROUPS 里有 KVMem 分类');
+
+console.log('--- 启动命令可自行修改 ---');
+chk(/function parseCommandLine/.test(xj), 'parseCommandLine 解析用户手写的命令');
+chk(/function applyCmdOverride/.test(xj), 'applyCmdOverride 合并基准命令与手改命令');
+chk(/'cmdOverride'/.test(sj), 'store 白名单含 cmdOverride（手改命令会落盘）');
+chk(/cmdOverride/.test(mj), 'main.js 启动时应用手改命令');
+chk(/applyCmdOverride/.test(mj), '启动路径真的调用了 applyCmdOverride');
+chk(/cmdOverride/.test(rj), 'renderer 读写命令框内容');
+chk(/savedCmdOverride/.test(rj), 'renderer 区分「自定义命令」与「基准命令」');
+chk(/id="p-cmd"/.test(hj) && /'p-cmd'/.test(rj), '命令框与渲染逻辑对得上');
+chk(/'p-cmd-regen'/.test(rj), '「重新生成」按钮已接线');
+chk(!/'p-extraargs'/.test(rj), 'renderer 不再引用已删除的补充参数输入框');
+chk(!/popt-llama/.test(rj) && !/popt-llama/.test(hj), '旧的 popt-llama 已全部改名');
 {
-  const sv = rj.match(/function switchView[\s\S]{0,900}?\n\}/);
-  chk(!!sv && !/'log'/.test(sv[0]), 'switchView 不再有 log 分支');
+  // 受保护项：模型文件/端口这些必须仍由管理器接管，否则界面显示的端口和
+  // 实际监听的端口会对不上，状态探测全废。
+  const ov = xj.match(/function applyCmdOverride[\s\S]*?\n\}/);
+  chk(!!ov && /'-m'/.test(ov[0]) && /'--host'/.test(ov[0]) && /'--port'/.test(ov[0]),
+      '受保护项含 -m / --host / --port');
+}
+{
+  const sv = rj.match(/function switchView[\s\S]{0,1400}?\n\}/);
+  chk(!!sv && /'log'/.test(sv[0]), 'switchView 支持第三页 log');
+  chk(!!sv && /pane-log/.test(sv[0]), 'switchView 会切到日志页');
 }
 
 fs.rmSync(OUT, { recursive: true, force: true });

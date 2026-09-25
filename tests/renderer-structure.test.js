@@ -38,6 +38,17 @@ class El {
   set id(v) { this._id = v; elById.set(v, this); }
   get className() { return [...this._classes].join(' '); }
   set className(v) { this._classes = new Set(String(v).split(/\s+/).filter(Boolean)); }
+  // SVG 元素的 className 是只读的，renderer 必须走 setAttribute —— 桩也得支持
+  setAttribute(name, value) {
+    const k = String(name).toLowerCase();
+    if (k === 'class') this.className = value;
+    else this._attrs[k] = String(value);
+  }
+  getAttribute(name) {
+    const k = String(name).toLowerCase();
+    if (k === 'class') return this.className;
+    return Object.prototype.hasOwnProperty.call(this._attrs, k) ? this._attrs[k] : null;
+  }
   get classList() {
     const s = this._classes;
     return {
@@ -282,27 +293,100 @@ const $ = (id) => elById.get(id);
 (async () => {
   await new Promise((r) => setTimeout(r, 150));
 
-  console.log('\n【1】只有两页，切换时左右栏正确');
-  ok(!$('pane-log'), '第三页 pane-log 已删除');
-  ok(!/data-view="log"/.test(html), '侧边栏没有「日志」入口');
+  console.log('\n【1】三页，切换时左右栏正确');
+  ok(!!$('pane-log'), '日志页 pane-log 存在（第三页）');
+  ok(/data-view="log"/.test(html), '侧边栏有「日志」入口');
   ok(!$('pane-models').classList.contains('hidden'), '第一页显示左栏');
   ok(!$('pane-status').classList.contains('hidden'), '第一页显示状态总览');
   ok($('pane-params').classList.contains('hidden'), '第一页隐藏启动参数');
+  ok($('pane-log').classList.contains('hidden'), '第一页隐藏日志页');
 
-  console.log('\n【2】状态总览「推理引擎」卡');
-  ok(!!$('st-engine'), '存在 #st-engine 元素');
-  ok(!!$('st-engine-sub'), '存在 #st-engine-sub 元素');
+  console.log('\n【2】状态总览：模型与引擎合并 + 资源环');
+  ok(!$('st-engine') && !$('st-engine-sub'),
+     '独立的「推理引擎」卡已合并进「当前模型」卡');
+  ok(!!$('st-engine-pill'), '当前模型名前有引擎标签');
+  ok(!!$('st-vram-arc') && !!$('st-mem-arc') && !!$('st-disk-arc'),
+     '显存/内存/磁盘 改为圆形进度条（svg 弧）');
+  ok(!!$('st-vram-pct') && !!$('st-mem-pct') && !!$('st-disk-pct'),
+     '圆环中心有百分比数字');
+  ok(!$('st-vram-bar') && !$('st-mem-bar') && !$('st-disk-bar'),
+     '旧的条形进度条已全部移除');
 
-  console.log('\n【3】参数页：上下文 + NInfer 参数');
+  console.log('\n【3】参数页：启动命令 + 折叠选项');
   ok(!!$('p-ctx'), '存在上下文输入框（唯一可改上下文的地方）');
   ok(!!$('p-ctx-note'), '存在上下文换算提示');
-  ok(!!$('p-ninfer-group'), '存在 NInfer 参数分组');
+  ok(!$('p-ninfer-group'), '旧的平级 NInfer 分组已移除（并入启动命令的子菜单）');
+  ok(!!$('popt-ctx') && !!$('popt-mem') && !!$('popt-perf') && !!$('popt-tpl')
+     && !!$('popt-sample') && !!$('popt-adv') && !!$('popt-ninfer'),
+     '七个选项分组都存在（上下文/显存与卸载/性能与批处理/对话模板/采样/高级/NInfer）');
+  ok(!$('popt-extra') && !$('p-extraargs'),
+     '「补充参数」已删除（命令框本身就能改，不需要兜底输入框）');
   ok(!!$('p-nf-kvdtype') && !!$('p-nf-spec'), '存在 KV / 投机解码下拉');
   ok(!!$('p-nf-prefill') && !!$('p-nf-draft'), '存在预填充块 / 草稿 token');
   ok(!!$('p-nf-thinking') && !!$('p-nf-visiontokens'), '存在思考预算 / 视觉 token 上限');
   ok(!!$('p-nf-vision') && !!$('p-nf-embedding') && !!$('p-nf-nocudagraph'), '存在三个 NInfer 开关');
   ok(!!$('p-row-nommproj'), 'mmproj 行可整行隐藏');
   ok(!!$('p-engine-tag'), '存在引擎徽标元素');
+  ok(!!$('p-copy'), '启动命令仍有复制按钮');
+  ok(!!$('p-loadmode'), '存在权重加载方式下拉');
+
+  console.log('\n【3b】KVMem（kvmem-llama.cpp 集成）');
+  ok(!!$('pgroup-kvmem'), '启动命令模块下方有 KVMem 分组');
+  ok(!!$('p-kvmem') && $('p-kvmem').type === 'checkbox',
+     'KVMem 只有开启/关闭开关');
+  ok(!!$('p-kvmem-link'), '分组底部有项目地址');
+  ok(/href="https:\/\/github\.com\/kvmem\/kvmem-llama\.cpp"/.test(html),
+     '项目地址指向 kvmem-llama.cpp');
+
+  console.log('\n【3a】启动命令可直接编辑');
+  ok($('p-cmd') && $('p-cmd').tagName === 'TEXTAREA',
+     '命令框是 textarea（可编辑），不是只读的 <pre>');
+  ok(!!$('p-cmd-regen'), '存在「重新生成」按钮（丢弃手改回到选项拼装）');
+  ok(!!$('p-cmd-flag'), '存在「已自定义」标记');
+  ok(!!$('p-cmd-warn'), '存在受保护项说明（模型/端口仍由管理器接管）');
+  // 新补全的可调项
+  ok(!!$('p-ngl') && !!$('p-splitmode') && !!$('p-kvoffload'), '显存：层数 / 切分方式 / KV 卸载');
+  ok(!!$('p-threads') && !!$('p-threadsbatch') && !!$('p-batch') && !!$('p-ubatch'), '性能：线程与批大小');
+  ok(!!$('p-fits'), '性能：--fit 开关');
+  ok(!!$('p-jinja') && !!$('p-chattpl') && !!$('p-reasoningfmt'), '模板：jinja / 模板文件 / 思考格式');
+  ok(!!$('p-temp') && !!$('p-topp') && !!$('p-topk')
+     && !!$('p-minp') && !!$('p-repeatpenalty') && !!$('p-presencepenalty'), '采样：六个采样参数');
+  ok(!!$('p-parallel') && !!$('p-timeout') && !!$('p-ctk') && !!$('p-ctv'), '高级：并发 / 超时 / KV 精度');
+  ok(!!$('p-noopoffload') && !!$('p-metrics') && !!$('p-nowebui'), '高级：三个开关');
+
+  console.log('\n【3b】显存与卸载收进启动命令的折叠子菜单');
+  // 结构要求：显存与卸载必须是「启动命令」组里的 details 子菜单，能折叠
+  const cmdGroup = html.match(/<div class="pgroup pgroup-cmd">[\s\S]*?<!-- ============ 设置面板/);
+  ok(!!cmdGroup, '找到启动命令分组容器');
+  if (cmdGroup) {
+    ok(/<details class="popt" id="popt-mem"/.test(cmdGroup[0]),
+       '显存与卸载是启动命令下的 <details> 子菜单（可折叠）');
+    ok(cmdGroup[0].indexOf('id="popt-mem"') > cmdGroup[0].indexOf('id="p-cmd"'),
+       '显存与卸载排在启动命令下方');
+    ok(/id="p-cmd"[\s\S]*id="p-ctx"[\s\S]*id="p-row-nommproj"/.test(cmdGroup[0]),
+       '命令预览在最上，选项按类别依次在其下');
+    // 折叠能力来自原生 details，必须有 summary 作为标题
+    const memBlock = cmdGroup[0].match(/<details class="popt" id="popt-mem"[\s\S]*?<\/details>/);
+    ok(!!memBlock && /<summary class="popt-head"/.test(memBlock[0]),
+       '显存与卸载用 summary 作标题，点标题即可折叠');
+    ok(!!memBlock && /id="popt-mem-val"/.test(memBlock[0]),
+       '收起时右侧显示当前值摘要');
+  }
+
+  console.log('\n【3c】保存 / 恢复默认按钮在菜单最下方右下角');
+  ok(!!$('p-save') && !!$('p-restore'), '同时存在「保存参数」与「恢复默认参数」');
+  const actions = html.match(/<div class="pactions">[\s\S]*?<\/div>\s*<\/div>\s*<\/div>/);
+  ok(!!actions, '找到底部操作条 .pactions');
+  if (actions) {
+    ok(actions[0].indexOf('id="p-restore"') < actions[0].indexOf('id="p-save"'),
+       '「恢复默认参数」排在「保存参数」左边');
+    ok(/pactions-btns/.test(actions[0]), '两个按钮同在一组（靠右对齐）');
+  }
+  // 保存按钮必须落在启动命令分组内部、且在选项区之后
+  if (cmdGroup) {
+    ok(cmdGroup[0].indexOf('id="p-save"') > cmdGroup[0].indexOf('class="poptions"'),
+       '保存按钮位于所有选项之下（菜单最下方）');
+  }
 
   console.log('\n【4】设置里的 NInfer 分组');
   ok(!!$('set-nf-distro'), '发行版下拉');
